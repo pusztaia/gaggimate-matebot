@@ -1,0 +1,67 @@
+services:
+  matebot:
+    image: ghcr.io/alexnly/matebot:latest
+    container_name: matebot
+    restart: unless-stopped
+
+    # Read Telegram credentials from host-side secret files.
+    # The chat-id file is expected to contain a JSON array, e.g. ["123456789"].
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        export TELEGRAM_BOT_TOKEN="$$(cat /run/secrets/telegram_token)"
+        export TELEGRAM_CHAT_ID="$$(python -c 'import json; print(json.load(open("/run/secrets/telegram_chat_ids.json"))[0])')"
+
+        test -n "$$TELEGRAM_BOT_TOKEN"
+        test -n "$$TELEGRAM_CHAT_ID"
+
+        exec matebot run
+
+    environment:
+      TZ: ${TZ:-Europe/Budapest}
+
+      # EXAMPLE ONLY:
+      # Replace 192.168.1.100 with the actual IP address or hostname
+      # of your GaggiMate. A DHCP reservation/static IP is recommended.
+      MATEBOT_MACHINE_HOST: ${MATEBOT_MACHINE_HOST:-192.168.1.100}
+
+      MATEBOT_MESSENGER: telegram
+      MATEBOT_STATE_DIR: /data/state
+
+      # Optional post-shot dial-in hints.
+      MATEBOT_HINTS: ${MATEBOT_HINTS:-1}
+
+      # Ignore very short runs such as quick flushes.
+      MATEBOT_MIN_SHOT_S: ${MATEBOT_MIN_SHOT_S:-10}
+
+    volumes:
+      # Persistent MATEbot state only.
+      # No MATEBOT_DATA_REPO is configured, so shot archive/journal sync
+      # to the Raspberry Pi is disabled.
+      - ${MATEBOT_DATA_PATH:-/mnt/ssd/matebot}/state:/data/state
+
+      - /etc/localtime:/etc/localtime:ro
+
+      # Host-side Telegram secrets.
+      - ${MATEBOT_TELEGRAM_TOKEN_PATH:-/mnt/ssd/secrets/telegram_token}:/run/secrets/telegram_token:ro
+      - ${MATEBOT_TELEGRAM_CHAT_IDS_PATH:-/mnt/ssd/secrets/telegram_chat_ids.json}:/run/secrets/telegram_chat_ids.json:ro
+
+    labels:
+      diun.enable: "true"
+
+    security_opt:
+      - no-new-privileges:true
+
+    mem_limit: ${MATEBOT_MEM_LIMIT:-256m}
+    mem_reservation: 64m
+    cpus: ${MATEBOT_CPU_LIMIT:-0.50}
+    pids_limit: 256
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"

@@ -1,0 +1,1328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>GaggiMate + MATEbot on RBP4</title>
+<meta name="description" content="Detailed RBP4 implementation guide for GaggiMate, MATEbot, Portainer and Telegram.">
+<style>
+:root{--bg:#0b0d10;--panel:#12161b;--panel2:#171c22;--text:#e9eef4;--muted:#9ba8b5;--line:#29313a;--accent:#e8a24b;--accent2:#69b5ff;--code:#080b0e;--max:1180px}
+@media(prefers-color-scheme:light){:root{--bg:#f5f6f8;--panel:#fff;--panel2:#f0f3f6;--text:#17202a;--muted:#607080;--line:#d9e0e6;--accent:#94500f;--accent2:#1768ad;--code:#f2f4f6}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif}a{color:var(--accent2);text-decoration:none}a:hover{text-decoration:underline}
+header{padding:55px 24px 42px;border-bottom:1px solid var(--line);background:linear-gradient(135deg,var(--panel),var(--bg))}.hero{max-width:var(--max);margin:auto}.eyebrow{color:var(--accent);font-size:.8rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1{font-size:clamp(2.4rem,6vw,4.8rem);line-height:1.02;letter-spacing:-.045em;margin:.35rem 0 1rem}.sub{max-width:850px;color:var(--muted);font-size:1.12rem}.badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}.badge{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:5px 10px;font-size:.84rem}
+.layout{max-width:var(--max);margin:auto;display:grid;grid-template-columns:250px minmax(0,1fr);gap:34px;padding:32px 24px 70px}nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:14px}nav strong{display:block;padding:4px 8px 10px}nav a{display:block;padding:5px 8px;border-radius:7px;color:var(--muted);font-size:.9rem}nav a:hover{background:var(--panel2);color:var(--text);text-decoration:none}main{min-width:0}h2{font-size:1.8rem;line-height:1.2;margin-top:50px;scroll-margin-top:18px}h3{margin-top:30px}blockquote{margin:18px 0;padding:15px 18px;border-left:4px solid var(--accent);background:var(--panel);border-radius:0 12px 12px 0}code{background:var(--code);border:1px solid var(--line);border-radius:5px;padding:.12em .35em;font:0.92em ui-monospace,SFMono-Regular,Consolas,monospace}pre{background:var(--code);border:1px solid var(--line);border-radius:12px;padding:16px;overflow:auto;line-height:1.5}pre code{border:0;padding:0;background:none}pre.diagram{white-space:pre-wrap;color:var(--muted)}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:16px 0}th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-size:.82rem;text-transform:uppercase;letter-spacing:.06em}hr{border:0;border-top:1px solid var(--line);margin:42px 0}li{margin:.25rem 0}footer{max-width:var(--max);margin:auto;padding:0 24px 45px;color:var(--muted)}
+
+/* End-to-end shot sequence */
+.seq-wrap{margin:20px 0 8px}
+.seq-actors{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.seq-actor{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:13px 10px;text-align:center;position:relative}
+.seq-actor .icon{display:block;font-size:1.5rem;line-height:1;margin-bottom:7px}
+.seq-actor b{display:block;font-size:.96rem}
+.seq-actor span{display:block;color:var(--muted);font-size:.76rem;margin-top:2px}
+.seq-flow{position:relative;padding:8px 0 2px}
+.seq-flow:before{content:"";position:absolute;left:25px;top:8px;bottom:12px;width:2px;background:linear-gradient(var(--accent2),var(--accent));opacity:.45}
+.seq-step{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px;position:relative;margin:0 0 12px}
+.seq-num{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--panel2);border:2px solid var(--accent2);font-weight:800;z-index:1;margin:8px 0 0 8px;box-shadow:0 0 0 5px var(--bg)}
+.seq-card{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:14px 16px;box-shadow:var(--shadow)}
+.seq-route{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-bottom:6px;font-size:.83rem}
+.seq-node{border:1px solid var(--line);background:var(--panel2);padding:3px 8px;border-radius:999px;font-weight:700}
+.seq-arrow{font-size:1.05rem;color:var(--accent);font-weight:800}
+.seq-proto{margin-left:auto;color:var(--muted);font:0.78rem ui-monospace,SFMono-Regular,Consolas,monospace}
+.seq-title{font-weight:800;font-size:1rem;margin-bottom:2px}
+.seq-desc{color:var(--muted);font-size:.9rem}
+.seq-result{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}
+.seq-result-card{border:1px solid var(--line);border-radius:14px;padding:15px;background:var(--panel2)}
+.seq-result-card strong{display:block;margin-bottom:4px}
+.seq-result-card.ok{border-color:color-mix(in srgb,var(--ok) 55%,var(--line))}
+.seq-result-card.muted-card{border-style:dashed}
+.seq-legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:.82rem;margin:10px 0 0 64px}
+.seq-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:var(--accent2)}
+.seq-dot.write{background:var(--accent)}
+@media(max-width:720px){
+  .seq-actors{grid-template-columns:1fr 1fr}
+  .seq-result{grid-template-columns:1fr}
+  .seq-proto{margin-left:0;width:100%}
+}
+
+@media(max-width:880px){.layout{grid-template-columns:1fr}nav{position:relative;top:0;max-height:none}}
+
+/* Downloads */
+.download-hero{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;background:linear-gradient(135deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:18px;padding:20px;margin:18px 0 24px;box-shadow:var(--shadow)}
+.download-hero h3{margin:0 0 4px;font-size:1.25rem}
+.download-hero p{margin:0;color:var(--muted)}
+.download-primary{display:inline-flex;align-items:center;gap:9px;background:var(--accent);color:#111!important;font-weight:800;padding:11px 16px;border-radius:10px;text-decoration:none!important;white-space:nowrap}
+.download-primary:hover{filter:brightness(1.06);transform:translateY(-1px)}
+.download-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:15px 0}
+.download-card{display:flex;flex-direction:column;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;text-decoration:none!important;color:var(--text)!important;transition:transform .15s ease,border-color .15s ease}
+.download-card:hover{transform:translateY(-2px);border-color:var(--accent2)}
+.download-card .download-icon{font-size:1.55rem;line-height:1}
+.download-card strong{font-size:1rem}
+.download-card small{color:var(--muted);line-height:1.4}
+.download-card .download-action{margin-top:auto;color:var(--accent2);font-weight:700;font-size:.85rem}
+
+
+/* Interactive configurator */
+.config-shell{background:linear-gradient(145deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:20px;padding:22px;margin:20px 0 28px;box-shadow:var(--shadow)}
+.config-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.config-head h2{margin:0 0 6px}.config-head p{margin:0;color:var(--muted);max-width:760px}
+.config-badge{border:1px solid var(--line);background:var(--panel);padding:6px 10px;border-radius:999px;font-size:.82rem;font-weight:800;color:var(--ok)}
+.config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px}
+.config-field{display:flex;flex-direction:column;gap:6px}.config-field.full{grid-column:1/-1}
+.config-field label{font-weight:750;font-size:.91rem}.config-field small{color:var(--muted);font-size:.78rem;line-height:1.35}
+.config-field input{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:10px;padding:10px 11px;font:inherit;outline:none}
+.config-field input:focus{border-color:var(--accent2);box-shadow:0 0 0 3px rgba(105,181,255,.12)}
+.config-inline{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.config-checks{display:flex;gap:16px;flex-wrap:wrap;padding-top:7px}.config-check{display:flex;align-items:center;gap:7px;font-size:.9rem}.config-check input{width:auto}
+.config-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:19px}
+.config-btn{border:1px solid var(--line);background:var(--panel2);color:var(--text);font:inherit;font-weight:800;border-radius:10px;padding:10px 14px;cursor:pointer}
+.config-btn:hover{border-color:var(--accent2);transform:translateY(-1px)}.config-btn.primary{background:var(--accent);border-color:var(--accent);color:#111}.config-btn.zip{background:var(--accent2);border-color:var(--accent2);color:#071018}.config-btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+.config-status{margin-top:14px;display:none;border-left:4px solid var(--ok);background:var(--panel);padding:11px 14px;border-radius:0 10px 10px 0}.config-status.error{border-color:#e36b6b}
+.generated{display:none;margin-top:20px}.generated.show{display:block}.generated-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.generated-tabs{display:flex;gap:6px;flex-wrap:wrap}.generated-tab{border:1px solid var(--line);background:var(--panel2);color:var(--muted);border-radius:8px;padding:6px 9px;cursor:pointer;font-size:.78rem;font-weight:750}.generated-tab.active{border-color:var(--accent2);color:var(--text)}
+.generated pre{max-height:460px;margin:0}.generated-downloads{display:grid;grid-template-columns:repeat(auto-fit,minmax(205px,1fr));gap:10px;margin-top:14px}
+.gen-file{border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:12px}.gen-file strong{display:block;font-size:.88rem;margin-bottom:4px}.gen-file small{display:block;color:var(--muted);margin-bottom:9px}.gen-file button{width:100%}
+.security-note{display:flex;gap:10px;align-items:flex-start;margin-top:15px;color:var(--muted);font-size:.86rem}.security-note b{color:var(--text)}
+@media(max-width:760px){.config-grid{grid-template-columns:1fr}.config-inline{grid-template-columns:1fr}.config-field.full{grid-column:auto}}
+
+</style>
+</head>
+<body>
+<header><div class="hero"><div class="eyebrow">RBP4 Implementation Guide</div><h1>GaggiMate + MATEbot</h1><p class="sub">Detailed architecture, data flow, security, Portainer deployment, operations and troubleshooting for the current Raspberry Pi 4 + Telegram implementation.</p><div class="badges"><span class="badge">GaggiMate v1.8.1</span><span class="badge">Raspberry Pi 4</span><span class="badge">Docker + Portainer</span><span class="badge">Telegram</span><span class="badge">Set your GaggiMate IP</span><span class="badge">No live shot archive</span></div>
+
+    <div class="callout warn" style="margin-top:24px">
+      <strong>Configure your own GaggiMate address.</strong>
+      Every <code>192.168.1.100</code> address on this page is a example private-LAN address.
+      Before deployment, set <code>MATEBOT_MACHINE_HOST</code> to the actual IP address or hostname of your GaggiMate.
+      For stable operation, use a DHCP reservation or static IP where practical.
+    </div>
+</div>
+<div class="callout warn" style="margin-top:24px">
+  <strong>Set your own GaggiMate IP.</strong>
+  <code>192.168.1.100</code> is only an example private-LAN address.
+  Before deployment, set <code>MATEBOT_MACHINE_HOST</code> to the actual IP address or hostname of your GaggiMate.
+  A DHCP reservation or static IP is recommended so the address stays stable.
+</div>
+</header>
+<div class="layout"><nav><strong>Contents</strong><a href="#configurator">⚙️ Interactive configurator</a><a href="#1-purpose-and-design-principles">1. Purpose and design principles</a><a href="#2-system-architecture">2. System architecture</a><a href="#3-how-gaggimate-works">3. How GaggiMate works</a><a href="#4-how-matebot-works">4. How MATEbot works</a><a href="#5-rbp4-docker-portainer-implementation">5. RBP4 / Docker / Portainer implementation</a><a href="#6-telegram-secret-implementation">6. Telegram secret implementation</a><a href="#7-persistent-state-on-the-pi">7. Persistent state on the Pi</a><a href="#8-shared-portainer-environment-file">8. Shared Portainer environment file</a><a href="#9-end-to-end-shot-sequence">9. End-to-end shot sequence</a><a href="#10-shot-ids-and-history-index">10. Shot IDs and history index</a><a href="#11-operations">11. Operations</a><a href="#12-troubleshooting-notes-from-this-implementation">12. Troubleshooting notes from this implementation</a><a href="#13-optional-matebot-features-not-enabled-in-the-production-baseline">13. Optional MATEbot features not enabled in the production baseline</a><a href="#14-security-model">14. Security model</a><a href="#15-github-documentation-layout">15. GitHub documentation layout</a><a href="#16-recommended-production-baseline">16. Recommended production baseline</a><a href="#17-implementation-files">17. Implementation files</a><a href="#18-primary-upstream-references">18. Primary upstream references</a></nav><main><h1>GaggiMate + MATEbot on RBP4</h1>
+<p><strong>Detailed implementation and operations guide</strong><br />
+<strong>Platform:</strong> Raspberry Pi 4 / Ubuntu / Docker / Portainer / GaggiMate v1.8.1 / MATEbot / Telegram<br />
+<strong>Verified against upstream documentation:</strong> 2026-08-31</p>
+<blockquote>
+<p><strong>Current production baseline:</strong> MATEbot watches GaggiMate, starts a Telegram questionnaire after a completed espresso shot, and writes the answers back to <strong>GaggiMate Shot Notes</strong>. The active <code>12-matebot.yaml</code> deliberately has <strong>no <code>MATEBOT_DATA_REPO</code></strong>, so there is no automatic shot archive or journal sync to the Raspberry Pi.</p>
+</blockquote>
+<hr />
+
+<section id="configurator" class="config-shell">
+  <div class="config-head">
+    <div>
+      <h2>Interactive configuration generator</h2>
+      <p>Enter your installation values. The page generates the Portainer YAML, environment file, both preparation scripts and installation notes directly in your browser.</p>
+    </div>
+    <span class="config-badge">Client-side only</span>
+  </div>
+
+  <div class="callout ok">
+    <strong>The Telegram bot token is never entered into this page.</strong>
+    The generated Telegram script requests it later in the Raspberry Pi terminal with echo disabled.
+  </div>
+
+  <div class="config-grid">
+    <div class="config-field">
+      <label for="cfg-host">GaggiMate IP address or hostname</label>
+      <input id="cfg-host" value="192.168.1.100" autocomplete="off" spellcheck="false">
+      <small>Use your actual GaggiMate address. A DHCP reservation/static IP is recommended.</small>
+    </div>
+
+    <div class="config-field">
+      <label for="cfg-tz">Timezone</label>
+      <input id="cfg-tz" value="Europe/Budapest" autocomplete="off" spellcheck="false">
+      <small>Example: Europe/Budapest, Europe/London, America/New_York.</small>
+    </div>
+
+    <div class="config-field">
+      <label for="cfg-data">MATEbot base directory</label>
+      <input id="cfg-data" value="/mnt/ssd/matebot" autocomplete="off" spellcheck="false">
+      <small>Persistent state will be created under <code>&lt;base&gt;/state</code>.</small>
+    </div>
+
+    <div class="config-field">
+      <label for="cfg-secrets">Telegram secrets directory</label>
+      <input id="cfg-secrets" value="/mnt/ssd/secrets" autocomplete="off" spellcheck="false">
+      <small>The token and chat-ID files will be stored here.</small>
+    </div>
+  </div>
+
+  <div class="callout">
+    <strong>Fixed defaults used by the generator:</strong>
+    UID/GID <code>1000:1000</code> · minimum shot <code>10 s</code> · memory <code>256m</code> · CPU <code>0.50</code> · image <code>latest</code> · dial-in hints enabled · Diun label enabled.
+  </div>
+
+  <div class="config-actions">
+    <button id="cfg-generate" class="config-btn primary" type="button">⚙ Generate files</button>
+    <button id="cfg-reset" class="config-btn" type="button">↺ Reset examples</button>
+    <button id="cfg-download-zip" class="config-btn zip" type="button" disabled>⬇ Download generated ZIP</button>
+  </div>
+
+  <div id="cfg-status" class="config-status" role="status"></div>
+
+  <div id="cfg-generated" class="generated">
+    <div class="generated-toolbar">
+      <div id="cfg-tabs" class="generated-tabs"></div>
+      <button id="cfg-copy" class="config-btn" type="button">Copy preview</button>
+    </div>
+    <pre><code id="cfg-preview"></code></pre>
+    <div id="cfg-downloads" class="generated-downloads"></div>
+  </div>
+
+  <div class="security-note">
+    <span>🔐</span>
+    <span><b>Privacy:</b> all entered values stay in the browser. The page does not submit them to a server.</span>
+  </div>
+</section>
+
+<hr />
+<h2 id="1-purpose-and-design-principles">1. Purpose and design principles</h2>
+<p>The implementation has three primary roles:</p>
+<ol>
+<li><strong>GaggiMate</strong> controls and monitors the espresso machine and remains the source of truth for shot history.</li>
+<li><strong>MATEbot</strong> runs continuously on RBP4 and watches the GaggiMate WebSocket API.</li>
+<li><strong>Telegram</strong> is the interaction layer for post-shot logging and MATEbot commands.</li>
+</ol>
+<p>The key design choice is to keep the live workflow simple: <strong>shot data stays on GaggiMate; only MATEbot's small state is persisted on the Pi</strong>.</p>
+<p>This avoids coupling the core Telegram workflow to optional archive, Git, site-generation, or <code>.slog</code> download operations.</p>
+<hr />
+<h2 id="2-system-architecture">2. System architecture</h2>
+<pre class="diagram"><code>flowchart LR
+    U[User / Telegram] &lt;--&gt;|Telegram Bot API / HTTPS| MB[MATEbot container on RBP4]
+    MB &lt;--&gt;|WebSocket ws://192.168.1.100/ws| GM[GaggiMate display firmware]
+    GM &lt;--&gt;|Bluetooth / controller protocol| CTRL[GaggiMate controller board]
+    CTRL --&gt; HW[Gaggia espresso machine: heater / pump / valve]
+    SCALE[Bluetooth scale] --&gt;|BLE| GM
+    MB --&gt; STATE[/Pi SSD: /mnt/ssd/matebot/state]
+    SEC[/Shared Diun Telegram secrets/] --&gt;|read-only bind mounts| MB
+</code></pre>
+<h3>Current data paths</h3>
+<table>
+<thead>
+<tr>
+  <th>Function</th>
+  <th>Endpoint / path</th>
+  <th>Direction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Live machine connection</td>
+  <td><code>ws://192.168.1.100/ws</code></td>
+  <td>MATEbot → GaggiMate</td>
+</tr>
+<tr>
+  <td>Shot detection</td>
+  <td><code>evt:status</code> WebSocket events</td>
+  <td>GaggiMate → MATEbot</td>
+</tr>
+<tr>
+  <td>Save post-shot evaluation</td>
+  <td><code>req:history:notes:save</code></td>
+  <td>MATEbot → GaggiMate</td>
+</tr>
+<tr>
+  <td>Telegram interaction</td>
+  <td>Telegram Bot API</td>
+  <td>MATEbot ↔ Telegram</td>
+</tr>
+<tr>
+  <td>Persistent MATEbot state</td>
+  <td><code>/mnt/ssd/matebot/state</code></td>
+  <td>MATEbot → Pi SSD</td>
+</tr>
+</tbody>
+</table>
+<p>The optional archive endpoints (<code>/api/history/index.bin</code>, <code>&lt;id&gt;.slog</code>, <code>&lt;id&gt;.json</code>, <code>/api/settings</code>) are part of MATEbot's archive/journal functionality, not the core simple deployment.</p>
+<hr />
+<h2 id="3-how-gaggimate-works">3. How GaggiMate works</h2>
+<p>GaggiMate upgrades the espresso machine with a dedicated hardware controller and a display-side ESP32 firmware.</p>
+<p>Upstream project structure separates:</p>
+<ul>
+<li><strong>Controller firmware</strong> — low-level heater, pump and valve control plus safety mechanisms.</li>
+<li><strong>Display firmware</strong> — Wi-Fi, Bluetooth, process orchestration, profiles, plugins, touch UI and local APIs.</li>
+<li><strong>Web UI</strong> — Preact/Vite interface built into the display firmware.</li>
+</ul>
+<p>The display communicates with the controller over Bluetooth and exposes a documented WebSocket API at <code>/ws</code> for local integrations such as MATEbot.</p>
+<h3>3.1 Brew profiles</h3>
+<p>A GaggiMate profile contains one or more phases. Depending on profile type and installed hardware, a phase can use:</p>
+<ul>
+<li>maximum duration,</li>
+<li>pump power / pressure / flow control,</li>
+<li>pressure and flow targets,</li>
+<li>volumetric / weight targets,</li>
+<li>valve state,</li>
+<li>temperature targets or overrides,</li>
+<li>phase transition / stop conditions.</li>
+</ul>
+<p>With a supported Bluetooth scale connected, GaggiMate can use measured output weight for volumetric operation.</p>
+<h3>3.2 Shot history and Shot Notes</h3>
+<p>GaggiMate maintains its own shot history. Shot Notes support fields including:</p>
+<ul>
+<li>rating,</li>
+<li>dose in,</li>
+<li>dose out,</li>
+<li>ratio,</li>
+<li>grind setting,</li>
+<li>taste balance (<code>sour</code>, <code>balanced</code>, <code>bitter</code>),</li>
+<li>free-form notes.</li>
+</ul>
+<p>MATEbot's post-shot questionnaire writes into this native Shot Notes structure, so the evaluation remains visible in the GaggiMate UI even if MATEbot is later removed.</p>
+<h3>3.3 Firmware level</h3>
+<p>The installation uses <strong>GaggiMate v1.8.1</strong>. The upstream v1.8.1 release includes reconnection/crash-related fixes. MATEbot documents GaggiMate firmware <strong>v1.7 or newer</strong> for its binary shot-log functionality.</p>
+<hr />
+<h2 id="4-how-matebot-works">4. How MATEbot works</h2>
+<p>MATEbot is a self-hosted GaggiMate companion. Upstream describes its central workflow as: detect a finished shot, ask the questions the user would otherwise forget, then save those answers directly back into GaggiMate.</p>
+<h3>4.1 Active post-shot flow</h3>
+<ol>
+<li>MATEbot starts in Docker on the Pi.</li>
+<li>It connects to <code>ws://192.168.1.100/ws</code>.</li>
+<li>It listens to GaggiMate <code>evt:status</code> events.</li>
+<li>It detects a finished brew shot.</li>
+<li>Short shots and cleaning-style profiles are filtered.</li>
+<li>It sends a short questionnaire via Telegram.</li>
+<li>The user provides rating/taste/recipe details.</li>
+<li>MATEbot sends <code>req:history:notes:save</code> to GaggiMate.</li>
+<li>GaggiMate stores the answer next to the shot in its own history.</li>
+<li>MATEbot persists only defaults/resume information in its state directory.</li>
+</ol>
+<h3>4.2 Filtering</h3>
+<p>Current minimum duration:</p>
+<pre><code class="language-env">MATEBOT_MIN_SHOT_S=10
+</code></pre>
+<p>MATEbot's documented default cleaning-profile filter is:</p>
+<pre><code class="language-text">(?i)backflush|descale|flush|clean
+</code></pre>
+<h3>4.3 Dial-in hints</h3>
+<p>With:</p>
+<pre><code class="language-env">MATEBOT_HINTS=1
+</code></pre>
+<p>MATEbot can suggest a next dial-in change after a sour, bitter or low-rated shot. The documented strategy is to change one variable at a time, following:</p>
+<ol>
+<li>grind,</li>
+<li>ratio,</li>
+<li>temperature.</li>
+</ol>
+<h3>4.4 Telegram commands</h3>
+<table>
+<thead>
+<tr>
+  <th>Command</th>
+  <th>Function</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>/wake</code></td>
+  <td>Put the machine into brew mode; can optionally invoke a smart-plug hook</td>
+</tr>
+<tr>
+  <td><code>/sleep</code></td>
+  <td>Return to standby; can optionally invoke a power-off hook</td>
+</tr>
+<tr>
+  <td><code>/status</code></td>
+  <td>Show mode, boiler temperature and water level</td>
+</tr>
+<tr>
+  <td><code>/last</code></td>
+  <td>Show the last MATEbot-logged shot</td>
+</tr>
+<tr>
+  <td><code>/fix</code></td>
+  <td>Redo the questionnaire for the last logged shot</td>
+</tr>
+<tr>
+  <td><code>/help</code></td>
+  <td>List available commands</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="5-rbp4-docker-portainer-implementation">5. RBP4 / Docker / Portainer implementation</h2>
+<h3>5.1 Active stack</h3>
+<p>The current stable stack is:</p>
+<pre><code class="language-text">12-matebot.yaml
+</code></pre>
+<p>Its main properties:</p>
+<ul>
+<li>image: <code>ghcr.io/alexnly/matebot:latest</code></li>
+<li>multi-arch image supports ARM64 / Raspberry Pi</li>
+<li>restart policy: <code>unless-stopped</code></li>
+<li>no public/container service port required for normal Telegram operation</li>
+<li>GaggiMate host: <code>192.168.1.100</code></li>
+<li>only MATEbot state is persisted</li>
+<li>Telegram secrets are mounted read-only</li>
+<li><strong>no <code>MATEBOT_DATA_REPO</code></strong></li>
+<li>no journal sync</li>
+<li>no <code>.slog</code> archive to Pi</li>
+<li>no JSON sidecar</li>
+</ul>
+<p>Core environment:</p>
+<pre><code class="language-yaml">environment:
+  TZ: ${TZ:-Europe/Budapest}
+  MATEBOT_MACHINE_HOST: ${MATEBOT_MACHINE_HOST:-192.168.1.100}  # EXAMPLE ONLY
+  MATEBOT_MESSENGER: telegram
+  MATEBOT_STATE_DIR: /data/state
+  MATEBOT_HINTS: ${MATEBOT_HINTS:-1}
+  MATEBOT_MIN_SHOT_S: ${MATEBOT_MIN_SHOT_S:-10}
+</code></pre>
+<p>Persistent volume:</p>
+<pre><code class="language-yaml">volumes:
+  - ${MATEBOT_DATA_PATH:-/mnt/ssd/matebot}/state:/data/state
+</code></pre>
+<h3>5.2 Resource limits</h3>
+<p>The stack currently limits the service to:</p>
+<table>
+<thead>
+<tr>
+  <th>Resource</th>
+  <th style="text-align:right">Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Memory limit</td>
+  <td style="text-align:right"><code>256m</code></td>
+</tr>
+<tr>
+  <td>Memory reservation</td>
+  <td style="text-align:right"><code>64m</code></td>
+</tr>
+<tr>
+  <td>CPU limit</td>
+  <td style="text-align:right"><code>0.50</code></td>
+</tr>
+<tr>
+  <td>PID limit</td>
+  <td style="text-align:right"><code>256</code></td>
+</tr>
+<tr>
+  <td>Stop grace</td>
+  <td style="text-align:right"><code>30s</code></td>
+</tr>
+<tr>
+  <td>Docker log max size</td>
+  <td style="text-align:right"><code>5m</code></td>
+</tr>
+<tr>
+  <td>Docker log files</td>
+  <td style="text-align:right"><code>3</code></td>
+</tr>
+</tbody>
+</table>
+<p>The service also uses:</p>
+<pre><code class="language-yaml">security_opt:
+  - no-new-privileges:true
+</code></pre>
+<hr />
+<h2 id="6-telegram-secret-implementation">6. Telegram secret implementation</h2>
+<p>The real Telegram token is deliberately <strong>not</strong> stored in <code>portainer.env.example</code> or hard-coded into the Portainer YAML.</p>
+<p>The MATEbot stack reuses the Diun Telegram secret files:</p>
+<pre><code class="language-text">/mnt/ssd/secrets/telegram_token
+/mnt/ssd/secrets/telegram_chat_ids.json
+</code></pre>
+<p>The stack mounts them read-only:</p>
+<pre><code class="language-yaml">- ${DIUN_TELEGRAM_TOKEN_PATH}:/run/secrets/telegram_token:ro
+- ${DIUN_TELEGRAM_CHAT_IDS_PATH}:/run/secrets/telegram_chat_ids.json:ro
+</code></pre>
+<p>Diun stores chat IDs as a JSON array, while MATEbot expects one numeric <code>TELEGRAM_CHAT_ID</code>. The container startup command converts the first entry:</p>
+<pre><code class="language-sh">export TELEGRAM_BOT_TOKEN=&quot;$(cat /run/secrets/telegram_token)&quot;
+export TELEGRAM_CHAT_ID=&quot;$(python -c \
+  'import json; print(json.load(open(&quot;/run/secrets/telegram_chat_ids.json&quot;))[0])')&quot;
+
+exec matebot run
+</code></pre>
+<h3>6.1 File permissions</h3>
+<p>The MATEbot image runs as:</p>
+<pre><code class="language-text">uid=1000(matebot) gid=1000(matebot)
+</code></pre>
+<p>Therefore the shared secret directory needs execute/traverse permission for group 1000 and the files need group-read permission.</p>
+<p>Recommended effective permissions:</p>
+<table>
+<thead>
+<tr>
+  <th>Path</th>
+  <th>Owner</th>
+  <th style="text-align:right">Group</th>
+  <th style="text-align:right">Mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>/mnt/ssd/secrets</code></td>
+  <td>root</td>
+  <td style="text-align:right">1000</td>
+  <td style="text-align:right"><code>750</code></td>
+</tr>
+<tr>
+  <td><code>telegram_token</code></td>
+  <td>root</td>
+  <td style="text-align:right">1000</td>
+  <td style="text-align:right"><code>640</code></td>
+</tr>
+<tr>
+  <td><code>telegram_chat_ids.json</code></td>
+  <td>root</td>
+  <td style="text-align:right">1000</td>
+  <td style="text-align:right"><code>640</code></td>
+</tr>
+</tbody>
+</table>
+<p>Commands:</p>
+<pre><code class="language-bash">sudo chown root:1000 /mnt/ssd/secrets
+sudo chmod 750 /mnt/ssd/secrets
+
+sudo chown root:1000 /mnt/ssd/secrets/telegram_token
+sudo chown root:1000 /mnt/ssd/secrets/telegram_chat_ids.json
+sudo chmod 640 /mnt/ssd/secrets/telegram_token
+sudo chmod 640 /mnt/ssd/secrets/telegram_chat_ids.json
+</code></pre>
+<blockquote>
+<p><strong>Security:</strong> never publish the actual Telegram bot token in GitHub, screenshots, logs, Markdown or HTML.</p>
+</blockquote>
+<hr />
+<h2 id="7-persistent-state-on-the-pi">7. Persistent state on the Pi</h2>
+<p>The active simple stack requires only:</p>
+<pre><code class="language-text">/mnt/ssd/matebot/state
+</code></pre>
+<p>which is mounted inside the container as:</p>
+<pre><code class="language-text">/data/state
+</code></pre>
+<p><code>MATEBOT_STATE_DIR</code> stores bot defaults and resume state.</p>
+<p>A minimal preparation script for the active design is therefore:</p>
+<pre><code class="language-sh">#!/bin/sh
+set -eu
+
+MATEBOT_DIR=&quot;${1:-/mnt/ssd/matebot}&quot;
+PUID=&quot;${PUID:-1000}&quot;
+PGID=&quot;${PGID:-1000}&quot;
+STATE_DIR=&quot;$MATEBOT_DIR/state&quot;
+
+sudo install -d -m 755 -o &quot;$PUID&quot; -g &quot;$PGID&quot; &quot;$MATEBOT_DIR&quot;
+sudo install -d -m 755 -o &quot;$PUID&quot; -g &quot;$PGID&quot; &quot;$STATE_DIR&quot;
+</code></pre>
+<h3>Current broader prep script</h3>
+<p>The current uploaded <code>prepare-matebot.sh</code> is broader than the active simple stack: it also creates <code>shots/</code> and <code>json/</code> and initializes <code>shots/</code> as a local Git repository.</p>
+<p>Those elements belong to the optional archive/JSON implementation and are <strong>not required</strong> for <code>12-matebot.yaml</code>.</p>
+<hr />
+<h2 id="8-shared-portainer-environment-file">8. Shared Portainer environment file</h2>
+<p>The active simple stack uses these values:</p>
+<pre><code class="language-env">MATEBOT_DATA_PATH=/mnt/ssd/matebot
+MATEBOT_MACHINE_HOST=192.168.1.100  # EXAMPLE ONLY - replace with your GaggiMate IP
+MATEBOT_HINTS=1
+MATEBOT_MIN_SHOT_S=10
+MATEBOT_MEM_LIMIT=256m
+MATEBOT_CPU_LIMIT=0.50
+</code></pre>
+<p>The current shared <code>portainer.env.example</code> additionally contains:</p>
+<pre><code class="language-env">MATEBOT_DATA_REPO=/data/shots
+MATEBOT_JSON_DIR=/data/json
+MATEBOT_JSON_SCAN_INTERVAL=10
+MATEBOT_JSON_MEM_LIMIT=128m
+MATEBOT_JSON_CPU_LIMIT=0.25
+</code></pre>
+<p>These values are currently <strong>inert</strong>, because <code>12-matebot.yaml</code> does not reference them.</p>
+<p>For clarity, there are two reasonable choices:</p>
+<ul>
+<li>keep them in the common env as prepared future options; or</li>
+<li>remove them from production env to make it explicit that archive/JSON export is disabled.</li>
+</ul>
+<hr />
+<h2 id="9-end-to-end-shot-sequence">9. End-to-end shot sequence</h2>
+<p class="muted">The live production path is deliberately short: detect the shot over the local WebSocket connection, collect the evaluation in Telegram, then save the notes back to GaggiMate.</p>
+
+<div class="seq-wrap" aria-label="End-to-end GaggiMate MATEbot shot sequence">
+  <div class="seq-actors">
+    <div class="seq-actor"><span class="icon">☕</span><b>GaggiMate</b><span>machine + shot history</span></div>
+    <div class="seq-actor"><span class="icon">⚙️</span><b>MATEbot / RBP4</b><span>watcher + questionnaire logic</span></div>
+    <div class="seq-actor"><span class="icon">✈️</span><b>Telegram</b><span>Bot API</span></div>
+    <div class="seq-actor"><span class="icon">👤</span><b>User</b><span>brew + evaluation</span></div>
+  </div>
+
+  <div class="seq-flow">
+    <div class="seq-step">
+      <div class="seq-num">1</div>
+      <div class="seq-card">
+        <div class="seq-route"><span class="seq-node">MATEbot</span><span class="seq-arrow">→</span><span class="seq-node">GaggiMate</span><span class="seq-proto">WebSocket /ws</span></div>
+        <div class="seq-title">Persistent live connection</div>
+        <div class="seq-desc">MATEbot connects to the configured GaggiMate host and subscribes to the live status stream.</div>
+      </div>
+    </div>
+
+    <div class="seq-step">
+      <div class="seq-num">2</div>
+      <div class="seq-card">
+        <div class="seq-route"><span class="seq-node">User</span><span class="seq-arrow">→</span><span class="seq-node">GaggiMate</span><span class="seq-proto">brew profile</span></div>
+        <div class="seq-title">Espresso shot starts</div>
+        <div class="seq-desc">The user starts a normal brew. GaggiMate controls the profile and records the shot locally.</div>
+      </div>
+    </div>
+
+    <div class="seq-step">
+      <div class="seq-num">3</div>
+      <div class="seq-card">
+        <div class="seq-route"><span class="seq-node">GaggiMate</span><span class="seq-arrow">→</span><span class="seq-node">MATEbot</span><span class="seq-proto">evt:status</span></div>
+        <div class="seq-title">Shot detection</div>
+        <div class="seq-desc">Live status and mode transitions allow MATEbot to recognize that the brew has completed. Short/cleaning runs can be filtered.</div>
+      </div>
+    </div>
+
+    <div class="seq-step">
+      <div class="seq-num">4</div>
+      <div class="seq-card">
+        <div class="seq-route"><span class="seq-node">MATEbot</span><span class="seq-arrow">→</span><span class="seq-node">Telegram</span><span class="seq-arrow">→</span><span class="seq-node">User</span><span class="seq-proto">Bot API</span></div>
+        <div class="seq-title">Post-shot questionnaire</div>
+        <div class="seq-desc">Telegram presents the rating, taste, grind and dose prompts. Previous values may be offered as defaults.</div>
+      </div>
+    </div>
+
+    <div class="seq-step">
+      <div class="seq-num">5</div>
+      <div class="seq-card">
+        <div class="seq-route"><span class="seq-node">User</span><span class="seq-arrow">→</span><span class="seq-node">Telegram</span><span class="seq-arrow">→</span><span class="seq-node">MATEbot</span><span class="seq-proto">getUpdates</span></div>
+        <div class="seq-title">Evaluation returned</div>
+        <div class="seq-desc">The answers are delivered back to MATEbot through Telegram polling.</div>
+      </div>
+    </div>
+
+    <div class="seq-step">
+      <div class="seq-num">6</div>
+      <div class="seq-card">
+        <div class="seq-route"><span class="seq-node">MATEbot</span><span class="seq-arrow">→</span><span class="seq-node">GaggiMate</span><span class="seq-proto">req:history:notes:save</span></div>
+        <div class="seq-title">Shot Notes saved</div>
+        <div class="seq-desc">MATEbot writes the completed evaluation to the matching GaggiMate shot. GaggiMate replies with <code>res:history:notes:save</code>.</div>
+      </div>
+    </div>
+
+    <div class="seq-step">
+      <div class="seq-num">7</div>
+      <div class="seq-card">
+        <div class="seq-route"><span class="seq-node">MATEbot</span><span class="seq-arrow">→</span><span class="seq-node">Pi SSD</span><span class="seq-proto">/data/state</span></div>
+        <div class="seq-title">Only small MATEbot state persists on RBP4</div>
+        <div class="seq-desc">The production baseline does not configure <code>MATEBOT_DATA_REPO</code>, so the Pi does not receive a live shot archive or journal sync.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="seq-result">
+    <div class="seq-result-card ok">
+      <strong>✓ Source of truth: GaggiMate</strong>
+      <span class="muted">Shot data + rating + dose/grind/taste notes remain attached to the shot in GaggiMate history.</span>
+    </div>
+    <div class="seq-result-card muted-card">
+      <strong>RBP4 stores state only</strong>
+      <span class="muted"><code>/mnt/ssd/matebot/state/</code> — no <code>.slog</code> archive in the simple baseline.</span>
+    </div>
+  </div>
+
+  <div class="seq-legend">
+    <span><i class="seq-dot"></i>live/read event path</span>
+    <span><i class="seq-dot write"></i>user evaluation / write-back path</span>
+  </div>
+</div>
+<hr />
+<h2 id="10-shot-ids-and-history-index">10. Shot IDs and history index</h2>
+<p>A startup log such as:</p>
+<pre><code class="language-text">INFO matebot.watcher: starting after shot id 146
+</code></pre>
+<p>means MATEbot establishes a watcher baseline and processes subsequent completed shots rather than re-running the questionnaire for older history entries.</p>
+<p>When investigating shot IDs, an HTTP <code>200</code> response for a guessed <code>/api/history/&lt;id&gt;.json</code> URL is <strong>not sufficient proof</strong> that the requested ID is a real active shot.</p>
+<p>The separate supplied utility <code>gaggimate_shots_to_json.py</code> uses the more reliable binary history index:</p>
+<pre><code class="language-text">GET /api/history/index.bin
+</code></pre>
+<p>It parses:</p>
+<ul>
+<li>index <code>entry_count</code>,</li>
+<li>index <code>next_id</code>,</li>
+<li>actual shot IDs,</li>
+<li><code>completed</code> flag,</li>
+<li><code>deleted</code> flag,</li>
+<li><code>has_notes</code> flag.</li>
+</ul>
+<p>This is important because <strong><code>next_id</code> and the latest active shot ID are different concepts</strong>.</p>
+<hr />
+<h2 id="11-operations">11. Operations</h2>
+<h3>Check container</h3>
+<pre><code class="language-bash">docker ps --filter name=matebot
+</code></pre>
+<h3>Follow logs</h3>
+<pre><code class="language-bash">docker logs -f matebot
+</code></pre>
+<p>Healthy startup normally contains messages equivalent to:</p>
+<pre><code class="language-text">telegram messenger polling as chat ...
+matebot.watcher: starting after shot id ...
+matebot.machine: connected to ws://192.168.1.100/ws
+</code></pre>
+<h3>Check image user</h3>
+<pre><code class="language-bash">docker run --rm --entrypoint id ghcr.io/alexnly/matebot:latest
+</code></pre>
+<p>Expected:</p>
+<pre><code class="language-text">uid=1000(matebot) gid=1000(matebot)
+</code></pre>
+<h3>Inspect state files</h3>
+<pre><code class="language-bash">find /mnt/ssd/matebot/state -maxdepth 2 -type f -print
+</code></pre>
+<h3>Test GaggiMate reachability</h3>
+<pre><code class="language-bash">ping 192.168.1.100
+curl -I http://192.168.1.100/
+</code></pre>
+<h3>Restart MATEbot</h3>
+<pre><code class="language-bash">docker restart matebot
+</code></pre>
+<hr />
+<h2 id="12-troubleshooting-notes-from-this-implementation">12. Troubleshooting notes from this implementation</h2>
+<h3>12.1 Empty Telegram chat ID</h3>
+<p>Symptom:</p>
+<pre><code class="language-text">ValueError: invalid literal for int() with base 10: ''
+</code></pre>
+<p>Meaning: MATEbot received an empty <code>TELEGRAM_CHAT_ID</code>.</p>
+<p>Current solution: the stack reads the first ID from Diun's JSON-array secret file during container startup.</p>
+<h3>12.2 Secret permission denied</h3>
+<p>Symptom:</p>
+<pre><code class="language-text">cat: /run/secrets/telegram_token: Permission denied
+PermissionError: /run/secrets/telegram_chat_ids.json
+</code></pre>
+<p>Cause: original <code>root:root 700/600</code> permissions did not allow the MATEbot UID/GID 1000 process to traverse/read the files.</p>
+<p>Solution: group <code>1000</code>, directory <code>750</code>, files <code>640</code>.</p>
+<h3>12.3 <code>The machine went offline before the journal could sync</code></h3>
+<p>This was observed when <code>MATEBOT_DATA_REPO</code> archive/journal sync was enabled.</p>
+<p>The current production design avoids that code path completely by using <code>12-matebot.yaml</code>, which has no <code>MATEBOT_DATA_REPO</code>.</p>
+<h3>12.4 Unexpected machine restart/offline event</h3>
+<p>If the GaggiMate resets during an integration action:</p>
+<ol>
+<li>leave archive disabled;</li>
+<li>reproduce using only Telegram + Shot Notes;</li>
+<li>run <code>docker logs -f matebot</code>;</li>
+<li>monitor <code>ping 192.168.1.100</code> in parallel;</li>
+<li>if reproducible, capture GaggiMate support/coredump data and isolate the API action immediately before the reset.</li>
+</ol>
+<hr />
+<h2 id="13-optional-matebot-features-not-enabled-in-the-production-baseline">13. Optional MATEbot features not enabled in the production baseline</h2>
+<h3>13.1 Local shot archive + static journal</h3>
+<p>Setting <code>MATEBOT_DATA_REPO</code> to a Git working tree enables archive/journal functionality.</p>
+<p>Upstream MATEbot can archive:</p>
+<ul>
+<li><code>.slog</code> shot logs,</li>
+<li>Shot Notes,</li>
+<li>brew profiles,</li>
+<li>machine settings with credentials redacted,</li>
+<li>generated static journal pages.</li>
+</ul>
+<p>It can then publish <code>/docs</code> via GitHub Pages.</p>
+<p><strong>Current decision:</strong> disabled for the live workflow.</p>
+<h3>13.2 <code>.slog</code> decoder</h3>
+<p>MATEbot includes:</p>
+<pre><code class="language-bash">matebot decode SHOT.slog
+</code></pre>
+<p>which outputs JSON. CSV is available with:</p>
+<pre><code class="language-bash">matebot decode SHOT.slog --csv
+</code></pre>
+<h3>13.3 Separate history export utility</h3>
+<p>The supplied <code>gaggimate_shots_to_json.py</code> is useful as an <strong>offline/on-demand</strong> tool instead of tying exports to every Telegram questionnaire.</p>
+<p>It:</p>
+<ul>
+<li>reads <code>index.bin</code>,</li>
+<li>downloads indexed <code>.slog</code> files,</li>
+<li>decodes GaggiMate v5 logs,</li>
+<li>optionally fetches per-shot notes,</li>
+<li>creates one JSON file per shot.</li>
+</ul>
+<p>This is a good isolation pattern: the live MATEbot remains simple while historical analysis is performed independently.</p>
+<h3>13.4 Smart-plug cold start</h3>
+<p>MATEbot supports:</p>
+<pre><code class="language-text">MATEBOT_WAKE_HOOK
+MATEBOT_SLEEP_HOOK
+</code></pre>
+<p>These can run arbitrary local commands, including Home Assistant webhook calls, Tasmota, Shelly or other smart-home control commands.</p>
+<h3>13.5 Camera and shot reels</h3>
+<p>With <code>MATEBOT_CAMERA=1</code>, MATEbot can serve a phone-camera page and synchronize video with shot charts. Browsers require HTTPS for camera access, so this feature would need TLS/WebSocket proxying (for example through the existing Nginx Proxy Manager).</p>
+<hr />
+<h2 id="14-security-model">14. Security model</h2>
+<p>Current security properties:</p>
+<ul>
+<li>GaggiMate ↔ MATEbot communication stays on the local LAN.</li>
+<li>Telegram communication necessarily reaches the Telegram Bot API.</li>
+<li>Bot token is stored in a host secret file, not YAML/env.</li>
+<li>Secret mounts are read-only.</li>
+<li>MATEbot runs as UID/GID 1000.</li>
+<li><code>no-new-privileges:true</code> is enabled.</li>
+<li>no MATEbot web port is exposed in the simple deployment.</li>
+<li>shot archive and settings backup are disabled in the live workflow.</li>
+</ul>
+<h3>Never commit to GitHub</h3>
+<ul>
+<li>Telegram bot token,</li>
+<li>private keys,</li>
+<li>Home Assistant tokens,</li>
+<li>Wi-Fi credentials,</li>
+<li>passwords,</li>
+<li>raw secret files.</li>
+</ul>
+<hr />
+
+<h2 id="15-github-documentation-layout">15. GitHub documentation layout</h2>
+<p>Recommended repository structure:</p>
+<pre><code class="language-text">/
+├── README.md
+├── index.html
+└── docs/                    # optional future screenshots / diagrams
+</code></pre>
+<p>The Markdown can be used as the repository <code>README.md</code>.</p>
+<p>The supplied <code>index.html</code> is self-contained and can be hosted directly with GitHub Pages:</p>
+<ol>
+<li>push <code>index.html</code> to <code>main</code>;</li>
+<li>open <strong>Settings → Pages</strong>;</li>
+<li>select <strong>Deploy from a branch</strong>;</li>
+<li>choose <code>main</code>;</li>
+<li>choose <code>/(root)</code>;</li>
+<li>save.</li>
+</ol>
+<p>No static-site generator is required.</p>
+<hr />
+<h2 id="16-recommended-production-baseline">16. Recommended production baseline</h2>
+<pre><code class="language-text">GaggiMate v1.8.1
+        │
+        │ ws://192.168.1.100/ws
+        ▼
+MATEbot on Raspberry Pi 4
+        │
+        ├── Telegram questionnaire
+        ├── Shot Notes saved back to GaggiMate
+        └── /mnt/ssd/matebot/state only
+
+NO MATEBOT_DATA_REPO
+NO automatic live shot archive to Pi
+NO JSON sidecar
+NO public MATEbot port
+</code></pre>
+<p>This minimizes moving parts and keeps the most useful function: <strong>automatic post-shot logging into GaggiMate's native history</strong>.</p>
+<hr />
+<h2 id="17-implementation-files">17. Implementation files</h2>
+<table>
+<thead>
+<tr>
+  <th>File / path</th>
+  <th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>12-matebot.yaml</code></td>
+  <td>Active Portainer stack</td>
+</tr>
+<tr>
+  <td><code>portainer.env.example</code></td>
+  <td>Shared Portainer variables</td>
+</tr>
+<tr>
+  <td><code>prepare-matebot.sh</code></td>
+  <td>Broader host prep; currently includes optional archive directories</td>
+</tr>
+<tr>
+  <td><code>gaggimate_shots_to_json.py</code></td>
+  <td>Separate on-demand history downloader / v5 decoder</td>
+</tr>
+<tr>
+  <td><code>/mnt/ssd/matebot/state</code></td>
+  <td>Active persistent MATEbot state</td>
+</tr>
+<tr>
+  <td><code>/mnt/ssd/secrets/telegram_token</code></td>
+  <td>Shared Telegram token file</td>
+</tr>
+<tr>
+  <td><code>/mnt/ssd/secrets/telegram_chat_ids.json</code></td>
+  <td>Shared Telegram chat-ID array</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="18-primary-upstream-references">18. Primary upstream references</h2>
+<h3>MATEbot</h3>
+<ul>
+<li>Repository: https://github.com/AlexNly/MATEbot</li>
+<li>Docker image: <code>ghcr.io/alexnly/matebot:latest</code></li>
+</ul>
+<p>Key documented interfaces:</p>
+<ul>
+<li><code>ws://&lt;machine&gt;/ws</code></li>
+<li><code>evt:status</code></li>
+<li><code>req:history:notes:save</code></li>
+<li>optional <code>/api/history/index.bin</code>, <code>&lt;id&gt;.slog</code>, <code>&lt;id&gt;.json</code></li>
+<li>optional <code>/api/settings</code></li>
+</ul>
+<h3>GaggiMate</h3>
+<ul>
+<li>Repository: https://github.com/jniebuhr/gaggimate</li>
+<li>Documentation: https://gaggimate.eu/</li>
+<li>WebSocket API: https://github.com/jniebuhr/gaggimate/blob/master/docs/websocket-api.yaml</li>
+<li>Shot Notes API: https://github.com/jniebuhr/gaggimate/blob/master/docs/shot-notes-api.md</li>
+<li>Profiles guide: https://github.com/jniebuhr/gaggimate-docs/blob/master/src/pages/docs/profiles.md</li>
+<li>v1.8.1 release: https://github.com/jniebuhr/gaggimate/releases/tag/v1.8.1</li>
+</ul>
+</main></div>
+<footer>GaggiMate + MATEbot RBP4 implementation · documentation verified 2026-08-31</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const el = (id) => document.getElementById(id);
+  const f = {
+    host: el("cfg-host"),
+    tz: el("cfg-tz"),
+    data: el("cfg-data"),
+    secrets: el("cfg-secrets")
+  };
+
+  const defaults = {
+    host: "192.168.1.100",
+    tz: "Europe/Budapest",
+    data: "/mnt/ssd/matebot",
+    secrets: "/mnt/ssd/secrets"
+  };
+
+  const FIXED = {
+    puid: "1000",
+    pgid: "1000",
+    minshot: "10",
+    memory: "256m",
+    cpu: "0.50",
+    image: "latest",
+    hints: true,
+    diun: true
+  };
+
+  let files = {};
+  let active = "";
+
+  const trim = (v) => String(v ?? "").trim();
+
+  function getValues() {
+    return {
+      host: trim(f.host.value),
+      tz: trim(f.tz.value),
+      data: trim(f.data.value).replace(/\/+$/, ""),
+      secrets: trim(f.secrets.value).replace(/\/+$/, "")
+    };
+  }
+
+  function validate(v) {
+    const e = [];
+    if (!v.host || /[\s\/\\:$?#\[\]@]/.test(v.host) ||
+        !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(v.host))
+      e.push("Invalid GaggiMate IP/hostname.");
+    if (!/^[A-Za-z0-9._+\-/]+$/.test(v.tz))
+      e.push("Invalid timezone.");
+    if (!/^\/[A-Za-z0-9._\/-]+$/.test(v.data) || v.data.includes(".."))
+      e.push("Invalid MATEbot path.");
+    if (!/^\/[A-Za-z0-9._\/-]+$/.test(v.secrets) || v.secrets.includes(".."))
+      e.push("Invalid secrets path.");
+    return e;
+  }
+
+  function yaml(v) {
+    return `services:
+  matebot:
+    image: ghcr.io/alexnly/matebot:${FIXED.image}
+    container_name: matebot
+    restart: unless-stopped
+
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        export TELEGRAM_BOT_TOKEN="$$(cat /run/secrets/telegram_token)"
+        export TELEGRAM_CHAT_ID="$$(python -c 'import json; print(json.load(open("/run/secrets/telegram_chat_ids.json"))[0])')"
+
+        test -n "$$TELEGRAM_BOT_TOKEN"
+        test -n "$$TELEGRAM_CHAT_ID"
+
+        exec matebot run
+
+    environment:
+      TZ: \${TZ:-${v.tz}}
+      MATEBOT_MACHINE_HOST: \${MATEBOT_MACHINE_HOST:-${v.host}}
+      MATEBOT_MESSENGER: telegram
+      MATEBOT_STATE_DIR: /data/state
+      MATEBOT_HINTS: \${MATEBOT_HINTS:-1}
+      MATEBOT_MIN_SHOT_S: \${MATEBOT_MIN_SHOT_S:-10}
+
+    volumes:
+      - \${MATEBOT_DATA_PATH:-${v.data}}/state:/data/state
+      - /etc/localtime:/etc/localtime:ro
+      - \${MATEBOT_TELEGRAM_TOKEN_PATH:-${v.secrets}/telegram_token}:/run/secrets/telegram_token:ro
+      - \${MATEBOT_TELEGRAM_CHAT_IDS_PATH:-${v.secrets}/telegram_chat_ids.json}:/run/secrets/telegram_chat_ids.json:ro
+
+    labels:
+      diun.enable: "true"
+
+    security_opt:
+      - no-new-privileges:true
+
+    mem_limit: \${MATEBOT_MEM_LIMIT:-256m}
+    mem_reservation: 64m
+    cpus: \${MATEBOT_CPU_LIMIT:-0.50}
+    pids_limit: 256
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+`;
+  }
+
+  function envFile(v) {
+    return `# Generated MATEbot Portainer environment file
+# Telegram credentials are intentionally NOT stored here.
+
+TZ=${v.tz}
+
+MATEBOT_MACHINE_HOST=${v.host}
+MATEBOT_DATA_PATH=${v.data}
+
+MATEBOT_TELEGRAM_TOKEN_PATH=${v.secrets}/telegram_token
+MATEBOT_TELEGRAM_CHAT_IDS_PATH=${v.secrets}/telegram_chat_ids.json
+
+# Fixed defaults
+MATEBOT_HINTS=1
+MATEBOT_MIN_SHOT_S=10
+MATEBOT_MEM_LIMIT=256m
+MATEBOT_CPU_LIMIT=0.50
+`;
+  }
+
+  function prepareMatebot(v) {
+    return `#!/bin/sh
+set -eu
+
+MATEBOT_DIR="\${1:-${v.data}}"
+PUID="\${PUID:-1000}"
+PGID="\${PGID:-1000}"
+STATE_DIR="$MATEBOT_DIR/state"
+
+sudo install -d -m 755 -o "$PUID" -g "$PGID" "$MATEBOT_DIR"
+sudo install -d -m 755 -o "$PUID" -g "$PGID" "$STATE_DIR"
+
+echo "MATEbot state directory is ready:"
+ls -ld "$MATEBOT_DIR" "$STATE_DIR"
+`;
+  }
+
+  function prepareTelegram(v) {
+    return `#!/bin/sh
+set -eu
+
+SECRETS_DIR="\${1:-${v.secrets}}"
+PGID="\${PGID:-1000}"
+
+TOKEN_FILE="$SECRETS_DIR/telegram_token"
+CHAT_IDS_FILE="$SECRETS_DIR/telegram_chat_ids.json"
+
+sudo install -d -m 750 -o root -g "$PGID" "$SECRETS_DIR"
+
+printf "Telegram bot token: "
+OLD_STTY=""
+if [ -t 0 ]; then
+    OLD_STTY="$(stty -g)"
+    trap 'stty "$OLD_STTY" 2>/dev/null || true' EXIT HUP INT TERM
+    stty -echo
+fi
+IFS= read -r TELEGRAM_TOKEN
+if [ -n "$OLD_STTY" ]; then
+    stty "$OLD_STTY"
+    trap - EXIT HUP INT TERM
+fi
+
+printf "\\nTelegram chat ID: "
+IFS= read -r TELEGRAM_CHAT_ID
+
+if [ -z "$TELEGRAM_TOKEN" ]; then
+    echo "Error: Telegram bot token must not be empty." >&2
+    exit 1
+fi
+
+case "$TELEGRAM_CHAT_ID" in
+    -*) CHAT_ID_DIGITS="\${TELEGRAM_CHAT_ID#-}" ;;
+    *)  CHAT_ID_DIGITS="$TELEGRAM_CHAT_ID" ;;
+esac
+
+if [ -z "$CHAT_ID_DIGITS" ]; then
+    echo "Error: Telegram chat ID must not be empty." >&2
+    exit 1
+fi
+
+case "$CHAT_ID_DIGITS" in
+    *[!0-9]*)
+        echo "Error: Telegram chat ID must be numeric, optionally starting with '-'." >&2
+        exit 1
+        ;;
+esac
+
+TMP_TOKEN="$(mktemp)"
+TMP_CHAT="$(mktemp)"
+trap 'rm -f "$TMP_TOKEN" "$TMP_CHAT"' EXIT HUP INT TERM
+
+umask 077
+printf '%s\\n' "$TELEGRAM_TOKEN" > "$TMP_TOKEN"
+printf '["%s"]\\n' "$TELEGRAM_CHAT_ID" > "$TMP_CHAT"
+
+sudo install -m 640 -o root -g "$PGID" "$TMP_TOKEN" "$TOKEN_FILE"
+sudo install -m 640 -o root -g "$PGID" "$TMP_CHAT" "$CHAT_IDS_FILE"
+
+rm -f "$TMP_TOKEN" "$TMP_CHAT"
+trap - EXIT HUP INT TERM
+unset TELEGRAM_TOKEN
+
+echo "Telegram secret files are ready:"
+ls -ld "$SECRETS_DIR"
+ls -l "$TOKEN_FILE" "$CHAT_IDS_FILE"
+echo "Chat ID file:"
+cat "$CHAT_IDS_FILE"
+echo "The bot token itself was not printed."
+`;
+  }
+
+  function installMd(v) {
+    return `# Generated MATEbot installation
+
+## Selected configuration
+
+- GaggiMate: \`${v.host}\`
+- Timezone: \`${v.tz}\`
+- MATEbot base: \`${v.data}\`
+- State: \`${v.data}/state\`
+- Telegram secrets: \`${v.secrets}\`
+
+## Fixed defaults
+
+- UID:GID: \`1000:1000\`
+- Minimum shot duration: \`10s\`
+- MATEbot image: \`ghcr.io/alexnly/matebot:latest\`
+- Dial-in hints: enabled
+- Memory limit: \`256m\`
+- CPU limit: \`0.50\`
+- Diun label: enabled
+
+## Install
+
+\`\`\`bash
+chmod +x prepare-matebot.sh prepare-matebot-telegram.sh
+./prepare-matebot.sh
+./prepare-matebot-telegram.sh
+\`\`\`
+
+Then create/update the Portainer stack with \`12-matebot.yaml\` and load \`portainer.env\`.
+
+After deployment:
+
+\`\`\`bash
+docker logs -f matebot
+\`\`\`
+
+Expected machine connection:
+
+\`\`\`text
+ws://${v.host}/ws
+\`\`\`
+
+This configuration intentionally does not set \`MATEBOT_DATA_REPO\`; automatic shot archive/journal sync is disabled.
+`;
+  }
+
+  function status(text, error=false) {
+    const box = el("cfg-status");
+    box.textContent = text;
+    box.classList.toggle("error", error);
+    box.style.display = "block";
+  }
+
+  function generate() {
+    const v = getValues();
+    const errors = validate(v);
+
+    if (errors.length) {
+      files = {};
+      el("cfg-generated").classList.remove("show");
+      el("cfg-download-zip").disabled = true;
+      status(errors.join(" "), true);
+      return;
+    }
+
+    files = {
+      "12-matebot.yaml": yaml(v),
+      "portainer.env": envFile(v),
+      "prepare-matebot.sh": prepareMatebot(v),
+      "prepare-matebot-telegram.sh": prepareTelegram(v),
+      "INSTALL.generated.md": installMd(v)
+    };
+
+    active = "12-matebot.yaml";
+    render();
+    el("cfg-generated").classList.add("show");
+    el("cfg-download-zip").disabled = false;
+    status("Files generated locally. Review the preview or download the generated ZIP.");
+  }
+
+  function render() {
+    const tabs = el("cfg-tabs");
+    const downloads = el("cfg-downloads");
+    tabs.replaceChildren();
+    downloads.replaceChildren();
+
+    Object.keys(files).forEach((name) => {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "generated-tab" + (name === active ? " active" : "");
+      tab.textContent = name;
+      tab.onclick = () => { active = name; render(); };
+      tabs.appendChild(tab);
+
+      const card = document.createElement("div");
+      card.className = "gen-file";
+
+      const strong = document.createElement("strong");
+      strong.textContent = name;
+
+      const small = document.createElement("small");
+      small.textContent = name.endsWith(".sh") ? "Preparation script" :
+                          name.endsWith(".yaml") ? "Portainer stack" :
+                          name.endsWith(".env") ? "Portainer environment" :
+                          "Installation notes";
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "config-btn";
+      button.textContent = "⬇ Download";
+      button.onclick = () => downloadText(name, files[name]);
+
+      card.append(strong, small, button);
+      downloads.appendChild(card);
+    });
+
+    el("cfg-preview").textContent = files[active] || "";
+  }
+
+  function downloadText(name, text) {
+    downloadBlob(name, new Blob([text], {type:"text/plain;charset=utf-8"}));
+  }
+
+  function downloadBlob(name, blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.hidden = true;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  const crcTable = (() => {
+    const t = new Uint32Array(256);
+    for (let n=0;n<256;n++) {
+      let c=n;
+      for (let k=0;k<8;k++) c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);
+      t[n]=c>>>0;
+    }
+    return t;
+  })();
+
+  function crc32(bytes) {
+    let c=0xFFFFFFFF;
+    for (const b of bytes) c=crcTable[(c^b)&255]^(c>>>8);
+    return (c^0xFFFFFFFF)>>>0;
+  }
+
+  const u16=(v)=>new Uint8Array([v&255,(v>>>8)&255]);
+  const u32=(v)=>new Uint8Array([v&255,(v>>>8)&255,(v>>>16)&255,(v>>>24)&255]);
+
+  function cat(parts) {
+    const n=parts.reduce((a,p)=>a+p.length,0);
+    const out=new Uint8Array(n);
+    let o=0;
+    for (const p of parts){out.set(p,o);o+=p.length;}
+    return out;
+  }
+
+  function dosNow() {
+    const d=new Date(), y=Math.max(1980,d.getFullYear());
+    return {
+      time:(d.getHours()<<11)|(d.getMinutes()<<5)|Math.floor(d.getSeconds()/2),
+      date:((y-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate()
+    };
+  }
+
+  function makeZip(items) {
+    const enc=new TextEncoder(), local=[], central=[];
+    let offset=0;
+    const dt=dosNow();
+
+    for (const [name,text] of Object.entries(items)) {
+      const nb=enc.encode(name), data=enc.encode(text), crc=crc32(data);
+
+      const lh=cat([
+        u32(0x04034b50),u16(20),u16(0),u16(0),u16(dt.time),u16(dt.date),
+        u32(crc),u32(data.length),u32(data.length),u16(nb.length),u16(0),nb,data
+      ]);
+      local.push(lh);
+
+      const mode=name.endsWith(".sh")?0o100755:0o100644;
+      const ch=cat([
+        u32(0x02014b50),u16(20),u16(20),u16(0),u16(0),u16(dt.time),u16(dt.date),
+        u32(crc),u32(data.length),u32(data.length),u16(nb.length),u16(0),u16(0),
+        u16(0),u16(0),u32((mode<<16)>>>0),u32(offset),nb
+      ]);
+      central.push(ch);
+      offset+=lh.length;
+    }
+
+    const ld=cat(local), cd=cat(central);
+    const end=cat([
+      u32(0x06054b50),u16(0),u16(0),u16(central.length),u16(central.length),
+      u32(cd.length),u32(ld.length),u16(0)
+    ]);
+
+    return new Blob([ld,cd,end],{type:"application/zip"});
+  }
+
+  el("cfg-generate").onclick = generate;
+
+  el("cfg-reset").onclick = () => {
+    Object.entries(defaults).forEach(([k,v]) => f[k].value=v);
+    files={};
+    el("cfg-generated").classList.remove("show");
+    el("cfg-download-zip").disabled=true;
+    el("cfg-status").style.display="none";
+  };
+
+  el("cfg-download-zip").onclick = () => {
+    if (Object.keys(files).length)
+      downloadBlob("matebot-generated-config.zip", makeZip(files));
+  };
+
+  el("cfg-copy").onclick = async () => {
+    if (!files[active]) return;
+    try {
+      await navigator.clipboard.writeText(files[active]);
+      el("cfg-copy").textContent="Copied";
+      setTimeout(()=>el("cfg-copy").textContent="Copy preview",1200);
+    } catch {
+      status("Clipboard access was blocked. Select the preview manually.", true);
+    }
+  };
+})();
+</script>
+
+</body></html>
