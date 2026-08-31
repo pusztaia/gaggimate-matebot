@@ -705,7 +705,7 @@ This minimizes moving parts and keeps the most useful function: **automatic post
 
 ### MATEbot
 
-- Repository: https://github.com/AlexNly/MATEbot
+- Repository: [https://github.com/AlexNly/MATEbot](https://github.com/AlexNly/MATEbot)
 - Docker image: `ghcr.io/alexnly/matebot:latest`
 
 Key documented interfaces:
@@ -718,9 +718,9 @@ Key documented interfaces:
 
 ### GaggiMate
 
-- Repository: https://github.com/jniebuhr/gaggimate
-- Documentation: https://gaggimate.eu/
-- WebSocket API: https://github.com/jniebuhr/gaggimate/blob/master/docs/websocket-api.yaml
-- Shot Notes API: https://github.com/jniebuhr/gaggimate/blob/master/docs/shot-notes-api.md
-- Profiles guide: https://github.com/jniebuhr/gaggimate-docs/blob/master/src/pages/docs/profiles.md
-- v1.8.1 release: https://github.com/jniebuhr/gaggimate/releases/tag/v1.8.1
+- Repository: [https://github.com/jniebuhr/gaggimate](https://github.com/jniebuhr/gaggimate)
+- Documentation: [https://gaggimate.eu/](https://gaggimate.eu/)
+- WebSocket API: [https://github.com/jniebuhr/gaggimate/blob/master/docs/websocket-api.yaml](https://github.com/jniebuhr/gaggimate/blob/master/docs/websocket-api.yaml)
+- Shot Notes API: [https://github.com/jniebuhr/gaggimate/blob/master/docs/shot-notes-api.md](https://github.com/jniebuhr/gaggimate/blob/master/docs/shot-notes-api.md)
+- Profiles guide: [https://github.com/jniebuhr/gaggimate-docs/blob/master/src/pages/docs/profiles.md](https://github.com/jniebuhr/gaggimate-docs/blob/master/src/pages/docs/profiles.md)
+- v1.8.1 release: [https://github.com/jniebuhr/gaggimate/releases/tag/v1.8.1](https://github.com/jniebuhr/gaggimate/releases/tag/v1.8.1)
