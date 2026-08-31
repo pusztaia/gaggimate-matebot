@@ -85,32 +85,108 @@ header{padding:55px 24px 42px;border-bottom:1px solid var(--line);background:lin
 .security-note{display:flex;gap:10px;align-items:flex-start;margin-top:15px;color:var(--muted);font-size:.86rem}.security-note b{color:var(--text)}
 @media(max-width:760px){.config-grid{grid-template-columns:1fr}.config-inline{grid-template-columns:1fr}.config-field.full{grid-column:auto}}
 
+
+/* Single-header documentation layout */
+body{background:var(--bg)}
+.layout{
+  max-width:1280px;
+  grid-template-columns:240px minmax(0,1fr);
+  gap:34px;
+  padding:30px 24px 72px;
+}
+nav{
+  top:24px;
+  border-radius:16px;
+  box-shadow:0 10px 32px rgba(0,0,0,.05);
+}
+main{min-width:0}
+main p,main li{max-width:76ch}
+
+.doc-intro{padding:8px 0 22px;margin:0}
+.doc-intro .eyebrow{margin-bottom:8px}
+.doc-intro h1{
+  font-size:clamp(2.65rem,5vw,4.35rem);
+  line-height:.98;
+  letter-spacing:-.045em;
+  margin:0 0 18px;
+  max-width:900px;
+}
+.doc-lead{
+  color:var(--muted);
+  font-size:1.08rem;
+  line-height:1.6;
+  margin:15px 0 20px;
+  max-width:72ch!important;
+}
+.doc-meta{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 12px}
+.doc-meta span{
+  display:inline-flex;
+  align-items:center;
+  padding:5px 9px;
+  border:1px solid var(--line);
+  background:var(--panel);
+  border-radius:999px;
+  color:var(--muted);
+  font-size:.78rem;
+  font-weight:650;
+}
+.doc-baseline{
+  display:grid;
+  gap:5px;
+  margin:18px 0 13px;
+  padding:16px 18px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-left:4px solid var(--accent);
+  border-radius:0 14px 14px 0;
+}
+.doc-baseline strong{font-size:.92rem}
+.doc-baseline span{color:var(--text);line-height:1.55}
+.doc-ip-note{
+  margin:10px 0 0!important;
+  color:var(--muted);
+  font-size:.9rem;
+}
+.doc-ip-note strong{color:var(--text)}
+#configurator{margin-top:28px}
+.config-shell{border-radius:18px;box-shadow:none}
+.config-head{margin-bottom:14px}
+.config-head h2{font-size:1.55rem}
+
+@media(max-width:880px){
+  .layout{grid-template-columns:1fr;padding:20px 16px 56px}
+  nav{position:relative;top:0;max-height:none}
+  .doc-intro{padding-top:0}
+  .doc-intro h1{font-size:clamp(2.25rem,10vw,3.6rem)}
+}
+
 </style>
 </head>
 <body>
-<header><div class="hero"><div class="eyebrow">RBP4 Implementation Guide</div><h1>GaggiMate + MATEbot</h1><p class="sub">Detailed architecture, data flow, security, Portainer deployment, operations and troubleshooting for the current Raspberry Pi 4 + Telegram implementation.</p><div class="badges"><span class="badge">GaggiMate v1.8.1</span><span class="badge">Raspberry Pi 4</span><span class="badge">Docker + Portainer</span><span class="badge">Telegram</span><span class="badge">Set your GaggiMate IP</span><span class="badge">No live shot archive</span></div>
 
-    <div class="callout warn" style="margin-top:24px">
-      <strong>Configure your own GaggiMate address.</strong>
-      Every <code>192.168.1.100</code> address on this page is a example private-LAN address.
-      Before deployment, set <code>MATEBOT_MACHINE_HOST</code> to the actual IP address or hostname of your GaggiMate.
-      For stable operation, use a DHCP reservation or static IP where practical.
-    </div>
-</div>
-<div class="callout warn" style="margin-top:24px">
-  <strong>Set your own GaggiMate IP.</strong>
-  <code>192.168.1.100</code> is only an example private-LAN address.
-  Before deployment, set <code>MATEBOT_MACHINE_HOST</code> to the actual IP address or hostname of your GaggiMate.
-  A DHCP reservation or static IP is recommended so the address stays stable.
-</div>
-</header>
-<div class="layout"><nav><strong>Contents</strong><a href="#configurator">⚙️ Interactive configurator</a><a href="#1-purpose-and-design-principles">1. Purpose and design principles</a><a href="#2-system-architecture">2. System architecture</a><a href="#3-how-gaggimate-works">3. How GaggiMate works</a><a href="#4-how-matebot-works">4. How MATEbot works</a><a href="#5-rbp4-docker-portainer-implementation">5. RBP4 / Docker / Portainer implementation</a><a href="#6-telegram-secret-implementation">6. Telegram secret implementation</a><a href="#7-persistent-state-on-the-pi">7. Persistent state on the Pi</a><a href="#8-shared-portainer-environment-file">8. Shared Portainer environment file</a><a href="#9-end-to-end-shot-sequence">9. End-to-end shot sequence</a><a href="#10-shot-ids-and-history-index">10. Shot IDs and history index</a><a href="#11-operations">11. Operations</a><a href="#12-troubleshooting-notes-from-this-implementation">12. Troubleshooting notes from this implementation</a><a href="#13-optional-matebot-features-not-enabled-in-the-production-baseline">13. Optional MATEbot features not enabled in the production baseline</a><a href="#14-security-model">14. Security model</a><a href="#15-github-documentation-layout">15. GitHub documentation layout</a><a href="#16-recommended-production-baseline">16. Recommended production baseline</a><a href="#17-implementation-files">17. Implementation files</a><a href="#18-primary-upstream-references">18. Primary upstream references</a></nav><main><h1>GaggiMate + MATEbot on RBP4</h1>
-<p><strong>Detailed implementation and operations guide</strong><br />
-<strong>Platform:</strong> Raspberry Pi 4 / Ubuntu / Docker / Portainer / GaggiMate v1.8.1 / MATEbot / Telegram<br />
-<strong>Verified against upstream documentation:</strong> 2026-08-31</p>
-<blockquote>
-<p><strong>Current production baseline:</strong> MATEbot watches GaggiMate, starts a Telegram questionnaire after a completed espresso shot, and writes the answers back to <strong>GaggiMate Shot Notes</strong>. The active <code>12-matebot.yaml</code> deliberately has <strong>no <code>MATEBOT_DATA_REPO</code></strong>, so there is no automatic shot archive or journal sync to the Raspberry Pi.</p>
-</blockquote>
+<div class="layout"><nav><strong>Contents</strong><a href="#configurator">⚙️ Interactive configurator</a><a href="#1-purpose-and-design-principles">1. Purpose and design principles</a><a href="#2-system-architecture">2. System architecture</a><a href="#3-how-gaggimate-works">3. How GaggiMate works</a><a href="#4-how-matebot-works">4. How MATEbot works</a><a href="#5-rbp4-docker-portainer-implementation">5. RBP4 / Docker / Portainer implementation</a><a href="#6-telegram-secret-implementation">6. Telegram secret implementation</a><a href="#7-persistent-state-on-the-pi">7. Persistent state on the Pi</a><a href="#8-shared-portainer-environment-file">8. Shared Portainer environment file</a><a href="#9-end-to-end-shot-sequence">9. End-to-end shot sequence</a><a href="#10-shot-ids-and-history-index">10. Shot IDs and history index</a><a href="#11-operations">11. Operations</a><a href="#12-troubleshooting-notes-from-this-implementation">12. Troubleshooting notes from this implementation</a><a href="#13-optional-matebot-features-not-enabled-in-the-production-baseline">13. Optional MATEbot features not enabled in the production baseline</a><a href="#14-security-model">14. Security model</a><a href="#15-github-documentation-layout">15. GitHub documentation layout</a><a href="#16-recommended-production-baseline">16. Recommended production baseline</a><a href="#17-implementation-files">17. Implementation files</a><a href="#18-primary-upstream-references">18. Primary upstream references</a></nav><main>
+<section class="doc-intro">
+  <div class="eyebrow">RBP4 Implementation Guide</div>
+  <h1>GaggiMate + MATEbot on RBP4</h1>
+
+  <div class="doc-meta">
+    <span>Raspberry Pi 4</span>
+    <span>Ubuntu</span>
+    <span>Docker + Portainer</span>
+    <span>GaggiMate v1.8.1</span>
+    <span>MATEbot</span>
+    <span>Telegram</span>
+  </div>
+
+  <p class="doc-lead">Architecture, data flow, security, Portainer deployment, operations and troubleshooting for the GaggiMate + MATEbot implementation.</p>
+
+  <div class="doc-baseline">
+    <strong>Current production baseline</strong>
+    <span>MATEbot watches GaggiMate, starts a Telegram questionnaire after a completed espresso shot, and writes the answers back to <strong>GaggiMate Shot Notes</strong>. The generated stack intentionally has no <code>MATEBOT_DATA_REPO</code>, so automatic shot archive / journal sync to the Raspberry Pi is disabled.</span>
+  </div>
+
+  <p class="doc-ip-note"><strong>IP example:</strong> documentation examples use <code>192.168.1.100</code>. Set <code>MATEBOT_MACHINE_HOST</code> to the actual IP address or hostname of your own GaggiMate.</p>
+</section>
 <hr />
 
 <section id="configurator" class="config-shell">
