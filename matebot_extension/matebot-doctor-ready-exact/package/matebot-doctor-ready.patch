@@ -1,0 +1,359 @@
+--- /tmp/matebot-doctor-ready-baseline/Dockerfile.profile-control	2026-09-01 04:56:30.370293989 +0000
++++ /mnt/data/matebot-doctor-ready-exact/package/Dockerfile.profile-control	2026-09-01 04:55:21.839090333 +0000
+@@ -3,6 +3,7 @@
+ USER root
+ COPY src/matebot/profiles.py /tmp/matebot-overlay/profiles.py
+ COPY src/matebot/diagnostics.py /tmp/matebot-overlay/diagnostics.py
++COPY src/matebot/warmup.py /tmp/matebot-overlay/warmup.py
+ COPY src/matebot/machine.py /tmp/matebot-overlay/machine.py
+ COPY src/matebot/commands.py /tmp/matebot-overlay/commands.py
+ COPY src/matebot/cli.py /tmp/matebot-overlay/cli.py
+@@ -20,7 +21,7 @@
+ 
+ dst = pathlib.Path(matebot.__file__).resolve().parent
+ src = pathlib.Path("/tmp/matebot-overlay")
+-for name in ("profiles.py", "diagnostics.py", "machine.py", "commands.py", "cli.py"):
++for name in ("profiles.py", "diagnostics.py", "warmup.py", "machine.py", "commands.py", "cli.py"):
+     shutil.copy2(src / name, dst / name)
+ shutil.copy2(src / "telegram.py", dst / "messengers" / "telegram.py")
+ PY
+
+--- /tmp/matebot-doctor-ready-baseline/src/matebot/commands.py	2026-09-01 04:52:39.023499723 +0000
++++ /mnt/data/matebot-doctor-ready-exact/package/src/matebot/commands.py	2026-09-01 04:55:21.838585787 +0000
+@@ -26,6 +26,7 @@
+     format_detail,
+     paginate_profiles,
+ )
++from .warmup import WarmupPhase, WarmupTracker
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -69,6 +70,7 @@
+         self._profile_view_all = False
+         self._profile_page = 0
+         self._started_at = time.monotonic()
++        self._warmup = WarmupTracker()
+ 
+     # ------------------------------------------------------------- dispatch
+ 
+@@ -195,6 +197,14 @@
+         if frame.get("wl") is not None:
+             line += f" · water {frame['wl']}%"
+         since_clean = self.state.get("shots_since_clean", 0)
++        thermal = self._warmup.snapshot()
++        if mode == "brew" and thermal.tracked:
++            if thermal.ready:
++                line += "\n✅ Thermal state READY"
++            else:
++                line += f"\n🌡 Warm-up {thermal.phase.value}"
++                if thermal.peak_c is not None and thermal.target_c is not None:
++                    line += f" · peak {thermal.peak_c:.1f}°C"
+         if since_clean:
+             line += f"\n🧽 {since_clean} shots since the last backflush"
+         await self.messenger.send(line)
+@@ -209,6 +219,7 @@
+             self.config,
+             self.latest_frame,
+             started_at=self._started_at,
++            warmup=self._warmup.snapshot(),
+         )
+         await self.messenger.send(report.render())
+ 
+@@ -511,21 +522,26 @@
+     # ------------------------------------------------------------- frames
+ 
+     async def on_frame(self, frame: dict[str, Any]) -> None:
+-        """Called for every status frame: brew enforcement, ready ping, tank watch."""
++        """Called for every status frame: brew enforcement, thermal readiness, tank watch."""
+         if frame.get("tp") != "evt:status":
+             return
++
++        thermal = self._warmup.observe(frame)
+         await self._enforce_brew(frame)
+         await self._check_water(frame)
+-        if not self._awaiting_ready:
++
++        if not self._awaiting_ready or not thermal.ready:
+             return
+-        ct, tt = frame.get("ct", 0), frame.get("tt", 0)
+-        if frame.get("m") == 1 and tt >= 60 and ct >= tt - 1.0:
+-            self._awaiting_ready = False
+-            text = f"☕ {ct:.1f}°C — the machine is ready when you are."
+-            wl = frame.get("wl")
+-            if wl is not None and self.config.water_warn_pct and wl < self.config.water_warn_pct:
+-                text += f" The tank is at {wl}%, though."
+-            await self.messenger.send(text)
++
++        self._awaiting_ready = False
++        ct = thermal.current_c if thermal.current_c is not None else frame.get("ct", 0)
++        text = f"☕ {ct:.1f}°C — warm-up settled; the machine is ready when you are."
++        if thermal.peak_c is not None:
++            text += f" Peak was {thermal.peak_c:.1f}°C."
++        wl = frame.get("wl")
++        if wl is not None and self.config.water_warn_pct and wl < self.config.water_warn_pct:
++            text += f" The tank is at {wl}%, though."
++        await self.messenger.send(text)
+ 
+     async def on_machine_online(self, frame: dict[str, Any]) -> None:
+         """Machine just (re)appeared: morning auto-heat, once per day.
+
+--- /tmp/matebot-doctor-ready-baseline/src/matebot/diagnostics.py	2026-09-01 04:52:40.535430435 +0000
++++ /mnt/data/matebot-doctor-ready-exact/package/src/matebot/diagnostics.py	2026-09-01 04:55:21.838877336 +0000
+@@ -9,6 +9,7 @@
+ from typing import Any
+ 
+ from .profiles import ProfileSummary
++from .warmup import READY_BAND_C, READY_STABLE_S, WarmupPhase, WarmupSnapshot
+ 
+ 
+ MODE_NAMES = {0: "standby", 1: "brew", 2: "steam", 3: "water", 4: "grind"}
+@@ -96,6 +97,7 @@
+     latest_frame: Any,
+     *,
+     started_at: float,
++    warmup: WarmupSnapshot | None = None,
+ ) -> DoctorReport:
+     """Run read-only diagnostics and return a compact report.
+ 
+@@ -166,6 +168,34 @@
+         if frame.get("p"):
+             machine_lines.append(f"Status profile {frame['p']}")
+ 
++        if warmup is not None and frame.get("m") == 1:
++            if warmup.ready:
++                machine_lines.append(
++                    report.ok(
++                        f"Thermal state READY · stable {warmup.stable_for_s:.0f} s"
++                    )
++                )
++            elif warmup.phase in {
++                WarmupPhase.HEATING,
++                WarmupPhase.OVERSHOOT,
++                WarmupPhase.SETTLING,
++                WarmupPhase.OBSERVING,
++            }:
++                machine_lines.append(
++                    report.warn(f"Thermal state {warmup.phase.value} · not ready yet")
++                )
++
++            if warmup.peak_c is not None and warmup.target_c is not None:
++                over = warmup.peak_c - warmup.target_c
++                machine_lines.append(
++                    f"Warm-up peak {warmup.peak_c:.1f} °C · overshoot {over:+.1f} °C"
++                )
++            if warmup.phase == WarmupPhase.SETTLING and warmup.in_ready_band:
++                machine_lines.append(
++                    f"Stable {warmup.stable_for_s:.0f}/{READY_STABLE_S:.0f} s "
++                    f"inside ±{READY_BAND_C:.1f} °C band"
++                )
++
+     report.section("GaggiMate", *machine_lines)
+ 
+     # -------------------------------------------------------------- profiles
+
+--- /dev/null	2026-09-01 04:30:06.167274643 +0000
++++ /mnt/data/matebot-doctor-ready-exact/package/src/matebot/warmup.py	2026-09-01 04:55:37.374838612 +0000
+@@ -0,0 +1,203 @@
++"""Thermal warm-up state tracking for GaggiMate status frames.
++
++The tracker is deliberately local to MATEbot.  GaggiMate exposes current
++(`ct`) and target (`tt`) temperature in `evt:status`, but it does not expose a
++single documented "thermally ready" flag.  We therefore require an observed
++overshoot followed by a stable return to the target band.
++"""
++
++from __future__ import annotations
++
++import time
++from dataclasses import dataclass
++from enum import Enum
++from typing import Any
++
++
++OVERSHOOT_DELTA_C = 3.0
++READY_BAND_C = 0.7
++READY_STABLE_S = 20.0
++SETTLING_DROP_C = 0.3
++TARGET_MIN_C = 60.0
++TARGET_CHANGE_C = 0.5
++
++
++class WarmupPhase(str, Enum):
++    IDLE = "IDLE"
++    OBSERVING = "OBSERVING"
++    HEATING = "HEATING"
++    OVERSHOOT = "OVERSHOOT"
++    SETTLING = "SETTLING"
++    READY = "READY"
++
++
++@dataclass(frozen=True, slots=True)
++class WarmupSnapshot:
++    phase: WarmupPhase
++    current_c: float | None
++    target_c: float | None
++    peak_c: float | None
++    overshoot_seen: bool
++    stable_for_s: float
++    ready: bool
++    tracked: bool
++
++    @property
++    def overshoot_c(self) -> float | None:
++        if self.peak_c is None or self.target_c is None:
++            return None
++        return self.peak_c - self.target_c
++
++    @property
++    def in_ready_band(self) -> bool:
++        if self.current_c is None or self.target_c is None:
++            return False
++        return abs(self.current_c - self.target_c) <= READY_BAND_C
++
++
++class WarmupTracker:
++    """Observe `evt:status` frames and classify thermal warm-up state."""
++
++    def __init__(self) -> None:
++        self._phase = WarmupPhase.IDLE
++        self._current_c: float | None = None
++        self._target_c: float | None = None
++        self._peak_c: float | None = None
++        self._overshoot_seen = False
++        self._stable_since: float | None = None
++        self._tracked = False
++        self._previous_mode: int | None = None
++
++    def reset(self) -> None:
++        self._phase = WarmupPhase.IDLE
++        self._current_c = None
++        self._target_c = None
++        self._peak_c = None
++        self._overshoot_seen = False
++        self._stable_since = None
++        self._tracked = False
++
++    def _start_cycle(self) -> None:
++        self._phase = WarmupPhase.OBSERVING
++        self._current_c = None
++        self._target_c = None
++        self._peak_c = None
++        self._overshoot_seen = False
++        self._stable_since = None
++        self._tracked = True
++
++    @staticmethod
++    def _number(value: Any) -> float | None:
++        if isinstance(value, bool):
++            return None
++        if isinstance(value, (int, float)):
++            return float(value)
++        return None
++
++    def observe(self, frame: dict[str, Any], *, now: float | None = None) -> WarmupSnapshot:
++        if frame.get("tp") != "evt:status":
++            return self.snapshot(now=now)
++
++        now = time.monotonic() if now is None else now
++        mode = frame.get("m")
++
++        # A transition into brew starts a new thermal cycle.  Leaving brew
++        # clears the previous ready state so steam/standby cannot leak into a
++        # later brew session.
++        if mode != 1:
++            if self._previous_mode == 1 or self._phase != WarmupPhase.IDLE:
++                self.reset()
++            self._previous_mode = mode if isinstance(mode, int) else None
++            return self.snapshot(now=now)
++
++        if self._previous_mode != 1 and not self._tracked:
++            self._start_cycle()
++        self._previous_mode = 1
++
++        current = self._number(frame.get("ct"))
++        target = self._number(frame.get("tt"))
++        self._current_c = current
++
++        if current is not None:
++            if self._peak_c is None or current > self._peak_c:
++                self._peak_c = current
++
++        if target is None or target < TARGET_MIN_C:
++            self._phase = WarmupPhase.OBSERVING
++            self._stable_since = None
++            return self.snapshot(now=now)
++
++        old_target = self._target_c
++        target_changed = (
++            old_target is not None and abs(target - old_target) > TARGET_CHANGE_C
++        )
++        self._target_c = target
++
++        if target_changed:
++            # A new selected profile/target must settle again.  We preserve the
++            # fact that the machine already completed its startup overshoot.
++            self._stable_since = None
++            if self._phase == WarmupPhase.READY:
++                self._phase = (
++                    WarmupPhase.SETTLING
++                    if self._overshoot_seen
++                    else WarmupPhase.OBSERVING
++                )
++
++        if current is None:
++            self._phase = WarmupPhase.OBSERVING
++            self._stable_since = None
++            return self.snapshot(now=now)
++
++        # Use the observed peak as well as the current sample.  This makes the
++        # detector robust if `tt` becomes valid just after the actual peak.
++        if self._peak_c is not None and self._peak_c >= target + OVERSHOOT_DELTA_C:
++            self._overshoot_seen = True
++
++        if self._overshoot_seen:
++            if (
++                self._peak_c is not None
++                and current >= target + OVERSHOOT_DELTA_C
++                and current >= self._peak_c - SETTLING_DROP_C
++            ):
++                self._phase = WarmupPhase.OVERSHOOT
++                self._stable_since = None
++                return self.snapshot(now=now)
++
++            in_band = abs(current - target) <= READY_BAND_C
++            if in_band:
++                if self._stable_since is None:
++                    self._stable_since = now
++                stable_for = now - self._stable_since
++                if stable_for >= READY_STABLE_S:
++                    self._phase = WarmupPhase.READY
++                else:
++                    self._phase = WarmupPhase.SETTLING
++            else:
++                self._stable_since = None
++                self._phase = WarmupPhase.SETTLING
++        else:
++            self._stable_since = None
++            if current < target - READY_BAND_C:
++                self._phase = WarmupPhase.HEATING
++            else:
++                # Crossing the target on the way up is deliberately NOT ready.
++                self._phase = WarmupPhase.OBSERVING
++
++        return self.snapshot(now=now)
++
++    def snapshot(self, *, now: float | None = None) -> WarmupSnapshot:
++        now = time.monotonic() if now is None else now
++        stable_for = 0.0
++        if self._stable_since is not None:
++            stable_for = max(0.0, now - self._stable_since)
++        return WarmupSnapshot(
++            phase=self._phase,
++            current_c=self._current_c,
++            target_c=self._target_c,
++            peak_c=self._peak_c,
++            overshoot_seen=self._overshoot_seen,
++            stable_for_s=stable_for,
++            ready=self._phase == WarmupPhase.READY,
++            tracked=self._tracked,
++        )

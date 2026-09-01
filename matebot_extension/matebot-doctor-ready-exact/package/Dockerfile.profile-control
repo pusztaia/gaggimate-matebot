@@ -1,0 +1,29 @@
+FROM ghcr.io/alexnly/matebot:latest
+
+USER root
+COPY src/matebot/profiles.py /tmp/matebot-overlay/profiles.py
+COPY src/matebot/diagnostics.py /tmp/matebot-overlay/diagnostics.py
+COPY src/matebot/warmup.py /tmp/matebot-overlay/warmup.py
+COPY src/matebot/machine.py /tmp/matebot-overlay/machine.py
+COPY src/matebot/commands.py /tmp/matebot-overlay/commands.py
+COPY src/matebot/cli.py /tmp/matebot-overlay/cli.py
+COPY src/matebot/messengers/telegram.py /tmp/matebot-overlay/telegram.py
+
+RUN python - <<'PY'
+import importlib.metadata
+import pathlib
+import shutil
+import matebot
+
+version = importlib.metadata.version("matebot")
+if version != "0.4.0":
+    raise SystemExit(f"profile-control patch expects matebot 0.4.0, got {version}")
+
+dst = pathlib.Path(matebot.__file__).resolve().parent
+src = pathlib.Path("/tmp/matebot-overlay")
+for name in ("profiles.py", "diagnostics.py", "warmup.py", "machine.py", "commands.py", "cli.py"):
+    shutil.copy2(src / name, dst / name)
+shutil.copy2(src / "telegram.py", dst / "messengers" / "telegram.py")
+PY
+
+USER 1000:1000

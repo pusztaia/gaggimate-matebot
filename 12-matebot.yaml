@@ -1,21 +1,34 @@
 services:
   matebot:
-    image: ghcr.io/alexnly/matebot:latest
+    # Local custom image built from matebot_extension/matebot-doctor-ready-exact/package/
+    # (Telegram profile control + /doctor diagnostics + thermal-overshoot-aware
+    # "ready" detection). This is not pulled from a registry: build it first with
+    #   cd matebot_extension/matebot-doctor-ready-exact/package
+    #   docker build -f Dockerfile.profile-control -t matebot-profile-control:0.4.0-doctor-ready1 .
+    # on the same host that will run this stack.
+    image: matebot-profile-control:0.4.0-doctor-ready1
+    pull_policy: never
     container_name: matebot
     restart: unless-stopped
 
     # Read Telegram credentials from host-side secret files.
-    # The chat-id file is expected to contain a JSON array, e.g. ["123456789"].
+    # The chat-id file is expected to contain a single numeric Telegram chat ID.
     entrypoint:
       - /bin/sh
       - -ec
     command:
       - |
         export TELEGRAM_BOT_TOKEN="$$(cat /run/secrets/telegram_token)"
-        export TELEGRAM_CHAT_ID="$$(python -c 'import json; print(json.load(open("/run/secrets/telegram_chat_ids.json"))[0])')"
+        export TELEGRAM_CHAT_ID="$$(cat /run/secrets/telegram_chat_id)"
 
         test -n "$$TELEGRAM_BOT_TOKEN"
-        test -n "$$TELEGRAM_CHAT_ID"
+
+        case "$$TELEGRAM_CHAT_ID" in
+          ''|*[!0-9-]*)
+            echo "ERROR: TELEGRAM_CHAT_ID must contain one numeric Telegram chat ID" >&2
+            exit 1
+            ;;
+        esac
 
         exec matebot run
 
@@ -36,6 +49,9 @@ services:
       # Ignore very short runs such as quick flushes.
       MATEBOT_MIN_SHOT_S: ${MATEBOT_MIN_SHOT_S:-10}
 
+      # Ignore cleaning / maintenance profiles as normal espresso shots.
+      MATEBOT_IGNORE_PROFILES: ${MATEBOT_IGNORE_PROFILES:-(?i)backflush|descale|flush|clean}
+
     volumes:
       # Persistent MATEbot state only.
       # No MATEBOT_DATA_REPO is configured, so shot archive/journal sync
@@ -46,10 +62,11 @@ services:
 
       # Host-side Telegram secrets.
       - ${MATEBOT_TELEGRAM_TOKEN_PATH:-/mnt/ssd/secrets/telegram_token}:/run/secrets/telegram_token:ro
-      - ${MATEBOT_TELEGRAM_CHAT_IDS_PATH:-/mnt/ssd/secrets/telegram_chat_ids.json}:/run/secrets/telegram_chat_ids.json:ro
+      - ${MATEBOT_TELEGRAM_CHAT_ID_PATH:-/mnt/ssd/secrets/telegram_chat_id}:/run/secrets/telegram_chat_id:ro
 
+    # Local custom image: Diun cannot check a registry for updates to it.
     labels:
-      diun.enable: "true"
+      diun.enable: "false"
 
     security_opt:
       - no-new-privileges:true

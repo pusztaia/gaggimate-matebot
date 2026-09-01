@@ -231,7 +231,7 @@ main p,main li{max-width:76ch}
 
   <div class="callout">
     <strong>Fixed defaults used by the generator:</strong>
-    UID/GID <code>1000:1000</code> · minimum shot <code>10 s</code> · memory <code>256m</code> · CPU <code>0.50</code> · image <code>latest</code> · dial-in hints enabled · Diun label enabled.
+    UID/GID <code>1000:1000</code> · minimum shot <code>10 s</code> · memory <code>256m</code> · CPU <code>0.50</code> · image <code>matebot-profile-control:0.4.0-doctor-ready1</code> (local build, not pulled) · dial-in hints enabled · Diun label disabled.
   </div>
 
   <div class="config-actions">
@@ -276,7 +276,7 @@ main p,main li{max-width:76ch}
     CTRL --&gt; HW[Gaggia espresso machine: heater / pump / valve]
     SCALE[Bluetooth scale] --&gt;|BLE| GM
     MB --&gt; STATE[/Pi SSD: /mnt/ssd/matebot/state]
-    SEC[/Shared Diun Telegram secrets/] --&gt;|read-only bind mounts| MB
+    SEC[/Dedicated MATEbot Telegram secrets/] --&gt;|read-only bind mounts| MB
 </code></pre>
 <h3>Current data paths</h3>
 <table>
@@ -372,8 +372,8 @@ main p,main li{max-width:76ch}
 <p>Current minimum duration:</p>
 <pre><code class="language-env">MATEBOT_MIN_SHOT_S=10
 </code></pre>
-<p>MATEbot's documented default cleaning-profile filter is:</p>
-<pre><code class="language-text">(?i)backflush|descale|flush|clean
+<p>MATEbot's documented default cleaning-profile filter is configurable via:</p>
+<pre><code class="language-env">MATEBOT_IGNORE_PROFILES=(?i)backflush|descale|flush|clean
 </code></pre>
 <h3>4.3 Dial-in hints</h3>
 <p>With:</p>
@@ -385,7 +385,12 @@ main p,main li{max-width:76ch}
 <li>ratio,</li>
 <li>temperature.</li>
 </ol>
-<h3>4.4 Telegram commands</h3>
+<h3>4.4 Thermal ready detection</h3>
+<p>The deployed image is built from <code>matebot_extension/matebot-doctor-ready-exact/package/</code>, which replaces the naive "current temperature &asymp; target" ready check with a warm-up state machine driven by the same <code>evt:status</code> fields:</p>
+<pre><code class="language-text">IDLE -&gt; HEATING -&gt; OVERSHOOT -&gt; SETTLING -&gt; READY
+</code></pre>
+<p>This machine's boiler overshoots the target during startup warm-up before settling back down, so the <code>/wake</code> ready notification now waits for an observed overshoot (peak &ge; target + 3.0&nbsp;&deg;C) followed by &ge;20 continuous seconds inside <code>target &plusmn; 0.7&nbsp;&deg;C</code>, rather than firing as soon as the target is first crossed. <code>/status</code> and <code>/doctor</code> both surface the current thermal state; see <code>matebot_extension/matebot-doctor-ready-exact/package/DOCTOR_READY.md</code> for the full state diagram, thresholds and example Telegram output. This tracker is read-only &mdash; it never changes PID values, profile temperature, mode, or brew parameters.</p>
+<h3>4.5 Telegram commands</h3>
 <table>
 <thead>
 <tr>
@@ -396,7 +401,7 @@ main p,main li{max-width:76ch}
 <tbody>
 <tr>
   <td><code>/wake</code></td>
-  <td>Put the machine into brew mode; can optionally invoke a smart-plug hook</td>
+  <td>Put the machine into brew mode; can optionally invoke a smart-plug hook; ready notification now gated on thermal-ready detection (&sect;4.4)</td>
 </tr>
 <tr>
   <td><code>/sleep</code></td>
@@ -404,7 +409,7 @@ main p,main li{max-width:76ch}
 </tr>
 <tr>
   <td><code>/status</code></td>
-  <td>Show mode, boiler temperature and water level</td>
+  <td>Show mode, boiler temperature, water level and thermal warm-up state</td>
 </tr>
 <tr>
   <td><code>/last</code></td>
@@ -415,11 +420,24 @@ main p,main li{max-width:76ch}
   <td>Redo the questionnaire for the last logged shot</td>
 </tr>
 <tr>
+  <td><code>/profile</code></td>
+  <td>Show the currently selected GaggiMate profile</td>
+</tr>
+<tr>
+  <td><code>/profiles</code></td>
+  <td>Browse favorite, non-utility profiles; <code>/profiles all</code> lists all non-utility profiles</td>
+</tr>
+<tr>
+  <td><code>/doctor</code></td>
+  <td>Run read-only diagnostics (state, live status, thermal state, profile API, history)</td>
+</tr>
+<tr>
   <td><code>/help</code></td>
   <td>List available commands</td>
 </tr>
 </tbody>
 </table>
+<p>Profile selection and diagnostics are implemented by <code>matebot_extension/matebot-doctor-ready-exact/package/src/matebot/profiles.py</code> and <code>diagnostics.py</code> respectively; see that package's <code>README.md</code>/<code>DOCTOR.md</code> for exact Telegram wording and safety invariants (e.g. utility/maintenance profiles are hidden and profile changes are blocked while a brew is active).</p>
 <hr />
 <h2 id="5-rbp4-docker-portainer-implementation">5. RBP4 / Docker / Portainer implementation</h2>
 <h3>5.1 Active stack</h3>
@@ -428,8 +446,8 @@ main p,main li{max-width:76ch}
 </code></pre>
 <p>Its main properties:</p>
 <ul>
-<li>image: <code>ghcr.io/alexnly/matebot:latest</code></li>
-<li>multi-arch image supports ARM64 / Raspberry Pi</li>
+<li>image: <code>matebot-profile-control:0.4.0-doctor-ready1</code>, a <strong>locally built custom image</strong> (<code>pull_policy: never</code>) &mdash; see "Build the image" below</li>
+<li>multi-arch base image supports ARM64 / Raspberry Pi</li>
 <li>restart policy: <code>unless-stopped</code></li>
 <li>no public/container service port required for normal Telegram operation</li>
 <li>GaggiMate host: <code>192.168.1.100</code></li>
@@ -440,6 +458,12 @@ main p,main li{max-width:76ch}
 <li>no <code>.slog</code> archive to Pi</li>
 <li>no JSON sidecar</li>
 </ul>
+<h4>Build the image</h4>
+<p><code>12-matebot.yaml</code> uses <code>pull_policy: never</code>, so the image must already exist on the Docker host before deploying. Build it from the overlay package in this repo:</p>
+<pre><code class="language-bash">cd matebot_extension/matebot-doctor-ready-exact/package
+docker build -f Dockerfile.profile-control -t matebot-profile-control:0.4.0-doctor-ready1 .
+</code></pre>
+<p>This starts <code>FROM ghcr.io/alexnly/matebot:latest</code>, verifies the installed <code>matebot</code> version is exactly <code>0.4.0</code>, and overlays the Telegram profile control, <code>/doctor</code>, and thermal-ready patches described in &sect;4.4/&sect;4.5. See <code>matebot_extension/matebot-doctor-ready-exact/package/README.md</code> for the smoke-test command and <code>CLAUDE.md</code> for the overlay's internal architecture.</p>
 <p>Core environment:</p>
 <pre><code class="language-yaml">environment:
   TZ: ${TZ:-Europe/Budapest}
@@ -448,6 +472,7 @@ main p,main li{max-width:76ch}
   MATEBOT_STATE_DIR: /data/state
   MATEBOT_HINTS: ${MATEBOT_HINTS:-1}
   MATEBOT_MIN_SHOT_S: ${MATEBOT_MIN_SHOT_S:-10}
+  MATEBOT_IGNORE_PROFILES: ${MATEBOT_IGNORE_PROFILES:-(?i)backflush|descale|flush|clean}
 </code></pre>
 <p>Persistent volume:</p>
 <pre><code class="language-yaml">volumes:
@@ -500,18 +525,26 @@ main p,main li{max-width:76ch}
 <hr />
 <h2 id="6-telegram-secret-implementation">6. Telegram secret implementation</h2>
 <p>The real Telegram token is deliberately <strong>not</strong> stored in <code>portainer.env.example</code> or hard-coded into the Portainer YAML.</p>
-<p>The MATEbot stack reuses the Diun Telegram secret files:</p>
+<p>The MATEbot stack uses its own dedicated Telegram secret files (not shared with Diun's update-notification secrets):</p>
 <pre><code class="language-text">/mnt/ssd/secrets/telegram_token
-/mnt/ssd/secrets/telegram_chat_ids.json
+/mnt/ssd/secrets/telegram_chat_id
 </code></pre>
 <p>The stack mounts them read-only:</p>
-<pre><code class="language-yaml">- ${DIUN_TELEGRAM_TOKEN_PATH}:/run/secrets/telegram_token:ro
-- ${DIUN_TELEGRAM_CHAT_IDS_PATH}:/run/secrets/telegram_chat_ids.json:ro
+<pre><code class="language-yaml">- ${MATEBOT_TELEGRAM_TOKEN_PATH}:/run/secrets/telegram_token:ro
+- ${MATEBOT_TELEGRAM_CHAT_ID_PATH}:/run/secrets/telegram_chat_id:ro
 </code></pre>
-<p>Diun stores chat IDs as a JSON array, while MATEbot expects one numeric <code>TELEGRAM_CHAT_ID</code>. The container startup command converts the first entry:</p>
+<p><code>telegram_chat_id</code> holds a single plain numeric chat ID (optionally negative for group chats) &mdash; not a JSON array. The container startup command reads it directly and validates it before starting MATEbot:</p>
 <pre><code class="language-sh">export TELEGRAM_BOT_TOKEN=&quot;$(cat /run/secrets/telegram_token)&quot;
-export TELEGRAM_CHAT_ID=&quot;$(python -c \
-  'import json; print(json.load(open(&quot;/run/secrets/telegram_chat_ids.json&quot;))[0])')&quot;
+export TELEGRAM_CHAT_ID=&quot;$(cat /run/secrets/telegram_chat_id)&quot;
+
+test -n &quot;$TELEGRAM_BOT_TOKEN&quot;
+
+case &quot;$TELEGRAM_CHAT_ID&quot; in
+  ''|*[!0-9-]*)
+    echo &quot;ERROR: TELEGRAM_CHAT_ID must contain one numeric Telegram chat ID&quot; &gt;&amp;2
+    exit 1
+    ;;
+esac
 
 exec matebot run
 </code></pre>
@@ -544,7 +577,7 @@ exec matebot run
   <td style="text-align:right"><code>640</code></td>
 </tr>
 <tr>
-  <td><code>telegram_chat_ids.json</code></td>
+  <td><code>telegram_chat_id</code></td>
   <td>root</td>
   <td style="text-align:right">1000</td>
   <td style="text-align:right"><code>640</code></td>
@@ -556,9 +589,9 @@ exec matebot run
 sudo chmod 750 /mnt/ssd/secrets
 
 sudo chown root:1000 /mnt/ssd/secrets/telegram_token
-sudo chown root:1000 /mnt/ssd/secrets/telegram_chat_ids.json
+sudo chown root:1000 /mnt/ssd/secrets/telegram_chat_id
 sudo chmod 640 /mnt/ssd/secrets/telegram_token
-sudo chmod 640 /mnt/ssd/secrets/telegram_chat_ids.json
+sudo chmod 640 /mnt/ssd/secrets/telegram_chat_id
 </code></pre>
 <blockquote>
 <p><strong>Security:</strong> never publish the actual Telegram bot token in GitHub, screenshots, logs, Markdown or HTML.</p>
@@ -584,9 +617,7 @@ STATE_DIR=&quot;$MATEBOT_DIR/state&quot;
 sudo install -d -m 755 -o &quot;$PUID&quot; -g &quot;$PGID&quot; &quot;$MATEBOT_DIR&quot;
 sudo install -d -m 755 -o &quot;$PUID&quot; -g &quot;$PGID&quot; &quot;$STATE_DIR&quot;
 </code></pre>
-<h3>Current broader prep script</h3>
-<p>The current uploaded <code>prepare-matebot.sh</code> is broader than the active simple stack: it also creates <code>shots/</code> and <code>json/</code> and initializes <code>shots/</code> as a local Git repository.</p>
-<p>Those elements belong to the optional archive/JSON implementation and are <strong>not required</strong> for <code>12-matebot.yaml</code>.</p>
+<p><code>prepare-matebot.sh</code> only creates the <code>state/</code> directory shown above &mdash; it does not create <code>shots/</code>/<code>json/</code> archive directories or a Git repository. Those elements belong to the optional archive/JSON implementation described in &sect;13 and would need to be added separately; they are <strong>not required</strong> for <code>12-matebot.yaml</code>.</p>
 <hr />
 <h2 id="8-shared-portainer-environment-file">8. Shared Portainer environment file</h2>
 <p>The active simple stack uses these values:</p>
@@ -737,7 +768,7 @@ matebot.watcher: starting after shot id ...
 matebot.machine: connected to ws://192.168.1.100/ws
 </code></pre>
 <h3>Check image user</h3>
-<pre><code class="language-bash">docker run --rm --entrypoint id ghcr.io/alexnly/matebot:latest
+<pre><code class="language-bash">docker run --rm --entrypoint id matebot-profile-control:0.4.0-doctor-ready1
 </code></pre>
 <p>Expected:</p>
 <pre><code class="language-text">uid=1000(matebot) gid=1000(matebot)
@@ -754,16 +785,16 @@ curl -I http://192.168.1.100/
 </code></pre>
 <hr />
 <h2 id="12-troubleshooting-notes-from-this-implementation">12. Troubleshooting notes from this implementation</h2>
-<h3>12.1 Empty Telegram chat ID</h3>
+<h3>12.1 Empty or non-numeric Telegram chat ID</h3>
 <p>Symptom:</p>
-<pre><code class="language-text">ValueError: invalid literal for int() with base 10: ''
+<pre><code class="language-text">ERROR: TELEGRAM_CHAT_ID must contain one numeric Telegram chat ID
 </code></pre>
-<p>Meaning: MATEbot received an empty <code>TELEGRAM_CHAT_ID</code>.</p>
-<p>Current solution: the stack reads the first ID from Diun's JSON-array secret file during container startup.</p>
+<p>Meaning: <code>/run/secrets/telegram_chat_id</code> was empty, missing, or not a plain (optionally negative) numeric value.</p>
+<p>Current solution: the container's entrypoint validates <code>TELEGRAM_CHAT_ID</code> with a shell <code>case</code> statement and refuses to start MATEbot until <code>prepare-matebot-telegram.sh</code> has written a valid numeric value to that file.</p>
 <h3>12.2 Secret permission denied</h3>
 <p>Symptom:</p>
 <pre><code class="language-text">cat: /run/secrets/telegram_token: Permission denied
-PermissionError: /run/secrets/telegram_chat_ids.json
+PermissionError: /run/secrets/telegram_chat_id
 </code></pre>
 <p>Cause: original <code>root:root 700/600</code> permissions did not allow the MATEbot UID/GID 1000 process to traverse/read the files.</p>
 <p>Solution: group <code>1000</code>, directory <code>750</code>, files <code>640</code>.</p>
@@ -867,10 +898,12 @@ MATEBOT_SLEEP_HOOK
         │
         │ ws://192.168.1.100/ws
         ▼
-MATEbot on Raspberry Pi 4
+MATEbot (local overlay image) on Raspberry Pi 4
         │
         ├── Telegram questionnaire
         ├── Shot Notes saved back to GaggiMate
+        ├── Thermal-ready detection (HEATING→OVERSHOOT→SETTLING→READY)
+        ├── /profile, /profiles, /doctor (read-only diagnostics)
         └── /mnt/ssd/matebot/state only
 
 NO MATEBOT_DATA_REPO
@@ -891,7 +924,7 @@ NO public MATEbot port
 <tbody>
 <tr>
   <td><code>12-matebot.yaml</code></td>
-  <td>Active Portainer stack</td>
+  <td>Active Portainer stack (local overlay image, <code>pull_policy: never</code>)</td>
 </tr>
 <tr>
   <td><code>portainer.env.example</code></td>
@@ -899,7 +932,11 @@ NO public MATEbot port
 </tr>
 <tr>
   <td><code>prepare-matebot.sh</code></td>
-  <td>Broader host prep; currently includes optional archive directories</td>
+  <td>Host prep; creates only the <code>state/</code> directory required by the active stack</td>
+</tr>
+<tr>
+  <td><code>matebot_extension/matebot-doctor-ready-exact/package/</code></td>
+  <td>Source of the deployed overlay image (Dockerfile, patched <code>matebot</code> files, profile control/<code>/doctor</code>/thermal-ready docs) &mdash; see its own <code>README.md</code>/<code>CLAUDE.md</code></td>
 </tr>
 <tr>
   <td><code>gaggimate_shots_to_json.py</code></td>
@@ -911,11 +948,11 @@ NO public MATEbot port
 </tr>
 <tr>
   <td><code>/mnt/ssd/secrets/telegram_token</code></td>
-  <td>Shared Telegram token file</td>
+  <td>Dedicated MATEbot Telegram token file</td>
 </tr>
 <tr>
-  <td><code>/mnt/ssd/secrets/telegram_chat_ids.json</code></td>
-  <td>Shared Telegram chat-ID array</td>
+  <td><code>/mnt/ssd/secrets/telegram_chat_id</code></td>
+  <td>Dedicated MATEbot Telegram chat-ID file (plain numeric)</td>
 </tr>
 </tbody>
 </table>
@@ -971,9 +1008,10 @@ NO public MATEbot port
     minshot: "10",
     memory: "256m",
     cpu: "0.50",
-    image: "latest",
+    image: "matebot-profile-control:0.4.0-doctor-ready1",
     hints: true,
-    diun: true
+    diun: false,
+    ignoreProfiles: "(?i)backflush|descale|flush|clean"
   };
 
   let files = {};
@@ -1007,7 +1045,13 @@ NO public MATEbot port
   function yaml(v) {
     return `services:
   matebot:
-    image: ghcr.io/alexnly/matebot:${FIXED.image}
+    # Local custom image built from matebot_extension/matebot-doctor-ready-exact/package/
+    # (Telegram profile control + /doctor diagnostics + thermal-overshoot-aware
+    # "ready" detection). Not pulled from a registry: build it first with
+    #   cd matebot_extension/matebot-doctor-ready-exact/package
+    #   docker build -f Dockerfile.profile-control -t ${FIXED.image} .
+    image: ${FIXED.image}
+    pull_policy: never
     container_name: matebot
     restart: unless-stopped
 
@@ -1017,10 +1061,16 @@ NO public MATEbot port
     command:
       - |
         export TELEGRAM_BOT_TOKEN="$$(cat /run/secrets/telegram_token)"
-        export TELEGRAM_CHAT_ID="$$(python -c 'import json; print(json.load(open("/run/secrets/telegram_chat_ids.json"))[0])')"
+        export TELEGRAM_CHAT_ID="$$(cat /run/secrets/telegram_chat_id)"
 
         test -n "$$TELEGRAM_BOT_TOKEN"
-        test -n "$$TELEGRAM_CHAT_ID"
+
+        case "$$TELEGRAM_CHAT_ID" in
+          ''|*[!0-9-]*)
+            echo "ERROR: TELEGRAM_CHAT_ID must contain one numeric Telegram chat ID" >&2
+            exit 1
+            ;;
+        esac
 
         exec matebot run
 
@@ -1031,15 +1081,17 @@ NO public MATEbot port
       MATEBOT_STATE_DIR: /data/state
       MATEBOT_HINTS: \${MATEBOT_HINTS:-1}
       MATEBOT_MIN_SHOT_S: \${MATEBOT_MIN_SHOT_S:-10}
+      MATEBOT_IGNORE_PROFILES: \${MATEBOT_IGNORE_PROFILES:-${FIXED.ignoreProfiles}}
 
     volumes:
       - \${MATEBOT_DATA_PATH:-${v.data}}/state:/data/state
       - /etc/localtime:/etc/localtime:ro
       - \${MATEBOT_TELEGRAM_TOKEN_PATH:-${v.secrets}/telegram_token}:/run/secrets/telegram_token:ro
-      - \${MATEBOT_TELEGRAM_CHAT_IDS_PATH:-${v.secrets}/telegram_chat_ids.json}:/run/secrets/telegram_chat_ids.json:ro
+      - \${MATEBOT_TELEGRAM_CHAT_ID_PATH:-${v.secrets}/telegram_chat_id}:/run/secrets/telegram_chat_id:ro
 
+    # Local custom image: Diun cannot check a registry for updates to it.
     labels:
-      diun.enable: "true"
+      diun.enable: "false"
 
     security_opt:
       - no-new-privileges:true
@@ -1068,11 +1120,12 @@ MATEBOT_MACHINE_HOST=${v.host}
 MATEBOT_DATA_PATH=${v.data}
 
 MATEBOT_TELEGRAM_TOKEN_PATH=${v.secrets}/telegram_token
-MATEBOT_TELEGRAM_CHAT_IDS_PATH=${v.secrets}/telegram_chat_ids.json
+MATEBOT_TELEGRAM_CHAT_ID_PATH=${v.secrets}/telegram_chat_id
 
 # Fixed defaults
 MATEBOT_HINTS=1
 MATEBOT_MIN_SHOT_S=10
+MATEBOT_IGNORE_PROFILES=${FIXED.ignoreProfiles}
 MATEBOT_MEM_LIMIT=256m
 MATEBOT_CPU_LIMIT=0.50
 `;
@@ -1103,7 +1156,7 @@ SECRETS_DIR="\${1:-${v.secrets}}"
 PGID="\${PGID:-1000}"
 
 TOKEN_FILE="$SECRETS_DIR/telegram_token"
-CHAT_IDS_FILE="$SECRETS_DIR/telegram_chat_ids.json"
+CHAT_ID_FILE="$SECRETS_DIR/telegram_chat_id"
 
 sudo install -d -m 750 -o root -g "$PGID" "$SECRETS_DIR"
 
@@ -1151,10 +1204,10 @@ trap 'rm -f "$TMP_TOKEN" "$TMP_CHAT"' EXIT HUP INT TERM
 
 umask 077
 printf '%s\\n' "$TELEGRAM_TOKEN" > "$TMP_TOKEN"
-printf '["%s"]\\n' "$TELEGRAM_CHAT_ID" > "$TMP_CHAT"
+printf '%s\\n' "$TELEGRAM_CHAT_ID" > "$TMP_CHAT"
 
 sudo install -m 640 -o root -g "$PGID" "$TMP_TOKEN" "$TOKEN_FILE"
-sudo install -m 640 -o root -g "$PGID" "$TMP_CHAT" "$CHAT_IDS_FILE"
+sudo install -m 640 -o root -g "$PGID" "$TMP_CHAT" "$CHAT_ID_FILE"
 
 rm -f "$TMP_TOKEN" "$TMP_CHAT"
 trap - EXIT HUP INT TERM
@@ -1162,9 +1215,9 @@ unset TELEGRAM_TOKEN
 
 echo "Telegram secret files are ready:"
 ls -ld "$SECRETS_DIR"
-ls -l "$TOKEN_FILE" "$CHAT_IDS_FILE"
+ls -l "$TOKEN_FILE" "$CHAT_ID_FILE"
 echo "Chat ID file:"
-cat "$CHAT_IDS_FILE"
+cat "$CHAT_ID_FILE"
 echo "The bot token itself was not printed."
 `;
   }
@@ -1184,11 +1237,21 @@ echo "The bot token itself was not printed."
 
 - UID:GID: \`1000:1000\`
 - Minimum shot duration: \`10s\`
-- MATEbot image: \`ghcr.io/alexnly/matebot:latest\`
+- Cleaning-profile filter: \`${FIXED.ignoreProfiles}\`
+- MATEbot image: \`${FIXED.image}\` (locally built, \`pull_policy: never\`)
 - Dial-in hints: enabled
 - Memory limit: \`256m\`
 - CPU limit: \`0.50\`
-- Diun label: enabled
+- Diun label: disabled
+
+## Build the image first
+
+This stack does not pull from a registry. Build it once on the Docker host from the overlay package in this repo:
+
+\`\`\`bash
+cd matebot_extension/matebot-doctor-ready-exact/package
+docker build -f Dockerfile.profile-control -t ${FIXED.image} .
+\`\`\`
 
 ## Install
 

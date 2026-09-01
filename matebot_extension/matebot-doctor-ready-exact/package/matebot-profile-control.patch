@@ -1,0 +1,722 @@
+diff --git a/src/matebot/cli.py b/src/matebot/cli.py
+index 0bdf1f9..e1ae7b4 100644
+--- a/src/matebot/cli.py
++++ b/src/matebot/cli.py
+@@ -88,7 +88,7 @@ async def _run(config: Config, *, replay: str | None, dry_run: bool) -> int:
+     from .commands import CommandRouter, make_frame_cache
+     from .conversation import Conversation
+     from .machine import GaggiMateClient
+-    from .messengers.base import TextReply
++    from .messengers.base import OptionSelected, TextReply
+     from .state import State
+     from .sync import sync_soon
+     from .watcher import ShotWatcher, replay_frames
+@@ -250,6 +250,9 @@ async def _run(config: Config, *, replay: str | None, dry_run: bool) -> int:
+                         if isinstance(event, TextReply) and event.text.strip().startswith("/"):
+                             if await router.handle(event.text):
+                                 continue
++                        if isinstance(event, OptionSelected):
++                            if await router.handle_option(event.option_id):
++                                continue
+                         await convo.handle_event(event)
+                     except Exception:  # noqa: BLE001 - a flaky send must not kill the bot
+                         log.exception("event handling failed")
+diff --git a/src/matebot/commands.py b/src/matebot/commands.py
+index 79dffc3..ed2b494 100644
+--- a/src/matebot/commands.py
++++ b/src/matebot/commands.py
+@@ -15,6 +15,17 @@ from datetime import datetime
+ from typing import Any
+ 
+ from .machine import MachineError
++from .messengers.base import Option
++from .profiles import (
++    ProfileNotFound,
++    ProfileSelectionBlocked,
++    ProfileService,
++    decode_callback,
++    encode_callback,
++    format_current,
++    format_detail,
++    paginate_profiles,
++)
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -25,6 +36,8 @@ HELP = (
+     "/wake — turn the machine on (brew mode); I'll ping you when it's at temperature\n"
+     "/sleep — back to standby\n"
+     "/status — mode, temperature, connectivity\n"
++    "/profile — show the selected GaggiMate profile\n"
++    "/profiles [all] — select a favorite profile (or show all brew profiles)\n"
+     "/last — the last logged shot\n"
+     "/fix [shot] — redo the questionnaire for the last shot (or e.g. /fix 62)\n"
+     "/skip — drop the questionnaire in progress, move on to the next queued shot\n"
+@@ -49,6 +62,11 @@ class CommandRouter:
+         self._ensure_brew_until = 0.0  # keep resending change-mode until brew is observed
+         self._last_brew_send = 0.0
+         self._args: list[str] = []
++        self._profiles = ProfileService(client)
++        self._profile_select_lock = asyncio.Lock()
++        self._profile_message_ref: str | None = None
++        self._profile_view_all = False
++        self._profile_page = 0
+ 
+     # ------------------------------------------------------------- dispatch
+ 
+@@ -179,6 +197,173 @@ class CommandRouter:
+             line += f"\n🧽 {since_clean} shots since the last backflush"
+         await self.messenger.send(line)
+ 
++
++    async def _cmd_profile(self) -> None:
++        current = await self._profiles.current()
++        options: list[Option] = []
++        if current is not None:
++            options.append(Option(encode_callback("d", current.id), "ℹ Details"))
++        options.append(Option(encode_callback("p", "0"), "📋 Profiles"))
++        await self.messenger.send(format_current(current), options)
++
++    async def _cmd_profiles(self) -> None:
++        if self._args and self._args[0].casefold() not in {"all"}:
++            await self.messenger.send("Usage: /profiles or /profiles all")
++            return
++        show_all = bool(self._args and self._args[0].casefold() == "all")
++        self._profile_view_all = show_all
++        self._profile_page = 0
++        await self._show_profile_page(show_all=show_all, page=0, edit=False)
++
++    async def handle_option(self, option_id: str) -> bool:
++        """Handle profile-control buttons before the shot questionnaire sees them."""
++        if not option_id.startswith("pf|"):
++            return False
++        try:
++            action, value = decode_callback(option_id)
++            if action == "s":
++                await self._select_profile(value)
++            elif action == "d":
++                await self._show_profile_detail(value)
++            elif action == "p":
++                self._profile_view_all = False
++                self._profile_page = int(value or 0)
++                await self._show_profile_page(show_all=False, page=self._profile_page, edit=True)
++            elif action == "a":
++                self._profile_view_all = True
++                self._profile_page = int(value or 0)
++                await self._show_profile_page(show_all=True, page=self._profile_page, edit=True)
++            elif action == "all":
++                self._profile_view_all = True
++                self._profile_page = 0
++                await self._show_profile_page(show_all=True, page=0, edit=True)
++            elif action == "fav":
++                self._profile_view_all = False
++                self._profile_page = 0
++                await self._show_profile_page(show_all=False, page=0, edit=True)
++            elif action == "r":
++                await self._show_profile_page(
++                    show_all=self._profile_view_all,
++                    page=self._profile_page,
++                    edit=True,
++                )
++            elif action == "back":
++                await self._show_profile_page(
++                    show_all=self._profile_view_all,
++                    page=self._profile_page,
++                    edit=True,
++                )
++        except (MachineError, ProfileNotFound, ProfileSelectionBlocked) as exc:
++            await self.messenger.send(f"⚠️ Profile action failed: {exc}")
++        except (ValueError, TypeError):
++            log.debug("bad profile callback %r", option_id, exc_info=True)
++        except Exception:  # noqa: BLE001
++            log.exception("profile callback failed: %s", option_id)
++            await self.messenger.send("⚠️ Profile action failed unexpectedly.")
++        return True
++
++    async def _show_profile_page(
++        self,
++        *,
++        show_all: bool,
++        page: int,
++        edit: bool,
++        notice: str | None = None,
++    ) -> None:
++        profiles = await self._profiles.list(
++            favorites_only=not show_all,
++            include_utility=False,
++        )
++        result = paginate_profiles(profiles, page=page, page_size=6)
++        self._profile_view_all = show_all
++        self._profile_page = result.page
++
++        current = next((p for p in profiles if p.selected), None)
++        heading = "All brew profiles" if show_all else "Favorite brew profiles"
++        lines = ["☕ GaggiMate Profiles", ""]
++        if notice:
++            lines.extend([notice, ""])
++        if current is not None:
++            lines.extend(["Current", f"✅ {current.label}", ""])
++        lines.append(heading)
++        if not profiles:
++            lines.append("No profiles found." if show_all else "No favorite brew profiles found.")
++        else:
++            lines.append(f"Page {result.page + 1}/{result.pages}")
++        text = "\n".join(lines)
++
++        options: list[Option] = []
++        for profile in result.items:
++            marker = "✅ " if profile.selected else ""
++            options.append(
++                Option(encode_callback("s", profile.id), f"{marker}{profile.label}")
++            )
++            options.append(
++                Option(encode_callback("d", profile.id), f"ℹ {profile.label}")
++            )
++        if result.has_previous:
++            action = "a" if show_all else "p"
++            options.append(Option(encode_callback(action, str(result.page - 1)), "◀ Prev"))
++        if result.has_next:
++            action = "a" if show_all else "p"
++            options.append(Option(encode_callback(action, str(result.page + 1)), "Next ▶"))
++        options.append(
++            Option(
++                encode_callback("fav" if show_all else "all", "0"),
++                "⭐ Favorites" if show_all else "Show all",
++            )
++        )
++        options.append(Option(encode_callback("r", "0"), "🔄 Refresh"))
++
++        if edit and self._profile_message_ref:
++            await self.messenger.edit(self._profile_message_ref, text, options)
++        else:
++            self._profile_message_ref = await self.messenger.send(text, options)
++
++    async def _show_profile_detail(self, profile_id: str) -> None:
++        payload = await self._profiles.load(profile_id)
++        profile = next(
++            (
++                p
++                for p in await self._profiles.list(
++                    favorites_only=False, include_utility=True
++                )
++                if p.id == profile_id
++            ),
++            None,
++        )
++        options: list[Option] = []
++        if profile is not None and not profile.utility and not profile.selected:
++            options.append(Option(encode_callback("s", profile.id), "✅ Select"))
++        options.append(Option(encode_callback("back", "0"), "◀ Back"))
++        text = format_detail(payload)
++        if self._profile_message_ref:
++            await self.messenger.edit(self._profile_message_ref, text, options)
++        else:
++            self._profile_message_ref = await self.messenger.send(text, options)
++
++    def _shot_in_progress(self) -> bool:
++        frame, age = self.latest_frame()
++        if frame is None or age > 20:
++            return False
++        process = frame.get("process") or {}
++        return frame.get("m") == 1 and process.get("a") == 1
++
++    async def _select_profile(self, profile_id: str) -> None:
++        if self._shot_in_progress():
++            await self.messenger.send(
++                "⚠️ A shot is currently in progress. Profile selection is disabled until it ends."
++            )
++            return
++        async with self._profile_select_lock:
++            selected = await self._profiles.select(profile_id)
++            await self._show_profile_page(
++                show_all=self._profile_view_all,
++                page=self._profile_page,
++                edit=True,
++                notice=f"✅ Profile selected: {selected.label}",
++            )
++
+     async def _cmd_last(self) -> None:
+         last = self.state.get("last_shot")
+         if not last:
+diff --git a/src/matebot/machine.py b/src/matebot/machine.py
+index e6aa11c..5d44d9d 100644
+--- a/src/matebot/machine.py
++++ b/src/matebot/machine.py
+@@ -165,7 +165,29 @@ class GaggiMateClient:
+ 
+     async def profiles_list(self) -> list[dict]:
+         resp = await self.request("req:profiles:list", timeout=30.0)
+-        return resp.get("profiles", [])
++        if resp.get("error"):
++            raise MachineError(f"profile list failed: {resp['error']}")
++        return list(resp.get("profiles") or [])
++
++    async def profile_load(self, profile_id: str) -> dict:
++        """Load one profile over the rid-correlated WebSocket API."""
++        resp = await self.request(
++            "req:profiles:load", timeout=20.0, id=profile_id
++        )
++        if resp.get("error"):
++            raise MachineError(f"profile load failed: {resp['error']}")
++        profile = resp.get("profile")
++        if not isinstance(profile, dict):
++            raise MachineError(f"profile {profile_id!r} not found")
++        return profile
++
++    async def profile_select(self, profile_id: str) -> None:
++        """Select a profile; this never starts a brew."""
++        resp = await self.request(
++            "req:profiles:select", timeout=20.0, id=profile_id
++        )
++        if resp.get("error"):
++            raise MachineError(f"profile selection failed: {resp['error']}")
+ 
+     # ---------------------------------------------------------------- HTTP
+ 
+diff --git a/src/matebot/messengers/telegram.py b/src/matebot/messengers/telegram.py
+index f54aef9..0e5db63 100644
+--- a/src/matebot/messengers/telegram.py
++++ b/src/matebot/messengers/telegram.py
+@@ -49,6 +49,8 @@ class TelegramMessenger(Messenger):
+                 BotCommand("wake", "turn the machine on, ping when hot"),
+                 BotCommand("sleep", "machine to standby"),
+                 BotCommand("status", "mode, temperature, connectivity"),
++                BotCommand("profile", "show the selected GaggiMate profile"),
++                BotCommand("profiles", "browse and select GaggiMate profiles"),
+                 BotCommand("last", "last logged shot"),
+                 BotCommand("fix", "redo the last shot's log"),
+                 BotCommand("bag", "how much is left in the bean bag"),
+diff --git a/src/matebot/profiles.py b/src/matebot/profiles.py
+new file mode 100644
+index 0000000..da80bd0
+--- /dev/null
++++ b/src/matebot/profiles.py
+@@ -0,0 +1,218 @@
++"""Safe, read/select-only GaggiMate profile control.
++
++The service is messenger-agnostic. Telegram and Discord can both render the
++returned :class:`~matebot.messengers.base.Option` values through the existing
++MATEbot messenger abstraction.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Any, Mapping, Sequence
++
++from .machine import GaggiMateClient, MachineError
++
++
++class ProfileError(RuntimeError):
++    """Base class for profile-control failures."""
++
++
++class ProfileNotFound(ProfileError):
++    """The selected profile disappeared or no longer exists."""
++
++
++class ProfileSelectionBlocked(ProfileError):
++    """The requested profile is deliberately unavailable to normal control."""
++
++
++@dataclass(frozen=True, slots=True)
++class ProfileSummary:
++    id: str
++    label: str
++    type: str
++    description: str
++    favorite: bool
++    selected: bool
++    utility: bool
++    temperature: float | None
++    phase_count: int
++
++    @classmethod
++    def from_payload(cls, payload: Mapping[str, Any]) -> "ProfileSummary":
++        if not payload.get("id"):
++            raise ProfileError("profile payload has no id")
++        profile_id = str(payload["id"])
++        raw_temp = payload.get("temperature")
++        try:
++            temperature = float(raw_temp) if raw_temp is not None else None
++        except (TypeError, ValueError):
++            temperature = None
++        phases = payload.get("phases")
++        return cls(
++            id=profile_id,
++            label=str(payload.get("label") or profile_id),
++            type=str(payload.get("type") or ""),
++            description=str(payload.get("description") or ""),
++            favorite=bool(payload.get("favorite", False)),
++            selected=bool(payload.get("selected", False)),
++            utility=bool(payload.get("utility", False)),
++            temperature=temperature,
++            phase_count=len(phases) if isinstance(phases, list) else 0,
++        )
++
++
++@dataclass(frozen=True, slots=True)
++class ProfilePage:
++    items: tuple[ProfileSummary, ...]
++    page: int
++    pages: int
++    total: int
++
++    @property
++    def has_previous(self) -> bool:
++        return self.page > 0
++
++    @property
++    def has_next(self) -> bool:
++        return self.page + 1 < self.pages
++
++
++def sort_profiles(profiles: Sequence[ProfileSummary]) -> list[ProfileSummary]:
++    """Selected first, then favorites, then label."""
++    return sorted(
++        profiles,
++        key=lambda profile: (
++            not profile.selected,
++            not profile.favorite,
++            profile.label.casefold(),
++            profile.id,
++        ),
++    )
++
++
++def paginate_profiles(
++    profiles: Sequence[ProfileSummary],
++    *,
++    page: int = 0,
++    page_size: int = 6,
++) -> ProfilePage:
++    if page_size < 1:
++        raise ValueError("page_size must be >= 1")
++    total = len(profiles)
++    pages = max(1, (total + page_size - 1) // page_size)
++    safe_page = min(max(page, 0), pages - 1)
++    start = safe_page * page_size
++    return ProfilePage(
++        items=tuple(profiles[start : start + page_size]),
++        page=safe_page,
++        pages=pages,
++        total=total,
++    )
++
++
++class ProfileService:
++    """Read/select profiles while keeping destructive APIs out of scope."""
++
++    def __init__(self, client: GaggiMateClient) -> None:
++        self.client = client
++
++    async def list(
++        self,
++        *,
++        favorites_only: bool = True,
++        include_utility: bool = False,
++    ) -> list[ProfileSummary]:
++        payloads = await self.client.profiles_list()
++        profiles = [ProfileSummary.from_payload(payload) for payload in payloads]
++        if not include_utility:
++            profiles = [profile for profile in profiles if not profile.utility]
++        if favorites_only:
++            profiles = [profile for profile in profiles if profile.favorite]
++        return sort_profiles(profiles)
++
++    async def current(self) -> ProfileSummary | None:
++        profiles = await self.list(favorites_only=False, include_utility=True)
++        return next((profile for profile in profiles if profile.selected), None)
++
++    async def load(self, profile_id: str) -> dict[str, Any]:
++        try:
++            return await self.client.profile_load(profile_id)
++        except MachineError as exc:
++            if "not found" in str(exc).casefold():
++                raise ProfileNotFound(profile_id) from exc
++            raise
++
++    async def select(
++        self,
++        profile_id: str,
++        *,
++        allow_utility: bool = False,
++    ) -> ProfileSummary:
++        profiles = await self.list(favorites_only=False, include_utility=True)
++        target = next((profile for profile in profiles if profile.id == profile_id), None)
++        if target is None:
++            raise ProfileNotFound(profile_id)
++        if target.utility and not allow_utility:
++            raise ProfileSelectionBlocked(
++                f"utility profile cannot be selected here: {target.label}"
++            )
++
++        await self.client.profile_select(profile_id)
++
++        # Refresh from the machine. Never mark a profile selected before the
++        # firmware acknowledges the request.
++        refreshed = await self.list(favorites_only=False, include_utility=True)
++        return next(
++            (profile for profile in refreshed if profile.id == profile_id),
++            target,
++        )
++
++
++def encode_callback(action: str, value: str = "") -> str:
++    """Compact id that fits Telegram's 64-byte callback_data limit."""
++    data = f"pf|{action}" + (f"|{value}" if value else "")
++    if len(data.encode()) > 64:
++        raise ValueError("profile callback id exceeds 64 bytes")
++    return data
++
++
++def decode_callback(data: str) -> tuple[str, str]:
++    parts = data.split("|", 2)
++    if len(parts) < 2 or parts[0] != "pf":
++        raise ValueError("not a profile callback")
++    return parts[1], parts[2] if len(parts) == 3 else ""
++
++
++def format_current(profile: ProfileSummary | None) -> str:
++    if profile is None:
++        return "☕ Current profile\n\nNo selected profile reported by GaggiMate."
++    temp = f"{profile.temperature:.1f} °C" if profile.temperature is not None else "—"
++    favorite = "⭐" if profile.favorite else "No"
++    utility = "Yes" if profile.utility else "No"
++    return (
++        "☕ Current profile\n\n"
++        f"{profile.label}\n\n"
++        f"Type: {profile.type or '—'}\n"
++        f"Temperature: {temp}\n"
++        f"Phases: {profile.phase_count}\n"
++        f"Favorite: {favorite}\n"
++        f"Utility: {utility}"
++    )
++
++
++def format_detail(payload: Mapping[str, Any]) -> str:
++    profile = ProfileSummary.from_payload(payload)
++    text = format_current(profile).replace("☕ Current profile", "☕ Profile details", 1)
++    if profile.description:
++        text += f"\n\n{profile.description}"
++    phases = payload.get("phases") or []
++    if phases:
++        text += "\n\nPhases"
++        for i, phase in enumerate(phases[:8], 1):
++            name = phase.get("name") or phase.get("phase") or f"Phase {i}"
++            duration = phase.get("duration")
++            suffix = f" — {duration:g}s" if isinstance(duration, (int, float)) else ""
++            text += f"\n{i}. {name}{suffix}"
++        if len(phases) > 8:
++            text += f"\n… and {len(phases) - 8} more"
++    return text
+diff --git a/tests/test_profile_commands.py b/tests/test_profile_commands.py
+new file mode 100644
+index 0000000..5444189
+--- /dev/null
++++ b/tests/test_profile_commands.py
+@@ -0,0 +1,103 @@
++import asyncio
++from types import SimpleNamespace
++
++from matebot.commands import CommandRouter
++
++
++class FakeClient:
++    def __init__(self):
++        self.items = [
++            {
++                "id": "one", "label": "Profile One", "type": "pro",
++                "favorite": True, "selected": True, "utility": False,
++                "temperature": 93,
++                "phases": [{"name": "Brew", "duration": 20}],
++            },
++            {
++                "id": "two", "label": "Profile Two", "type": "pro",
++                "favorite": True, "selected": False, "utility": False,
++                "temperature": 94, "phases": [],
++            },
++        ]
++
++    async def profiles_list(self):
++        return [dict(x) for x in self.items]
++
++    async def profile_load(self, profile_id):
++        return next(dict(x) for x in self.items if x["id"] == profile_id)
++
++    async def profile_select(self, profile_id):
++        for x in self.items:
++            x["selected"] = x["id"] == profile_id
++
++
++class FakeMessenger:
++    def __init__(self):
++        self.sent = []
++        self.edited = []
++
++    async def send(self, text, options=None):
++        self.sent.append((text, options or []))
++        return str(len(self.sent))
++
++    async def edit(self, ref, text, options=None):
++        self.edited.append((ref, text, options or []))
++
++
++class FakeState:
++    def get(self, key, default=None):
++        return default
++
++    def set(self, key, value):
++        pass
++
++
++class FakeConvo:
++    async def skip(self):
++        return False
++
++
++def latest_idle():
++    return ({"tp": "evt:status", "m": 1, "process": {"a": 0}}, 0.1)
++
++
++def latest_brewing():
++    return ({"tp": "evt:status", "m": 1, "process": {"a": 1}}, 0.1)
++
++
++def router(latest=latest_idle):
++    messenger = FakeMessenger()
++    cfg = SimpleNamespace(
++        data_repo=None,
++        journal_url=None,
++        wake_hook=None,
++        sleep_hook=None,
++        water_warn_pct=0,
++        autoheat_window=None,
++    )
++    return (
++        CommandRouter(FakeClient(), FakeState(), FakeConvo(), messenger, cfg, latest),
++        messenger,
++    )
++
++
++def test_profiles_command_and_select_callback():
++    r, m = router()
++    assert asyncio.run(r.handle("/profiles"))
++    assert "GaggiMate Profiles" in m.sent[-1][0]
++    assert any(o.id == "pf|s|two" for o in m.sent[-1][1])
++    assert asyncio.run(r.handle_option("pf|s|two"))
++    assert m.edited
++    assert "Profile selected: Profile Two" in m.edited[-1][1]
++
++
++def test_profile_button_is_consumed_before_conversation():
++    r, _ = router()
++    assert asyncio.run(r.handle_option("pf|r|0"))
++
++
++def test_selection_blocked_during_brew():
++    r, m = router(latest_brewing)
++    asyncio.run(r.handle("/profiles"))
++    asyncio.run(r.handle_option("pf|s|two"))
++    assert "currently in progress" in m.sent[-1][0]
+diff --git a/tests/test_profiles.py b/tests/test_profiles.py
+new file mode 100644
+index 0000000..b20dc33
+--- /dev/null
++++ b/tests/test_profiles.py
+@@ -0,0 +1,95 @@
++import asyncio
++
++import pytest
++
++from matebot.profiles import (
++    ProfileSelectionBlocked,
++    ProfileService,
++    decode_callback,
++    encode_callback,
++    paginate_profiles,
++)
++
++
++class FakeClient:
++    def __init__(self):
++        self.items = [
++            {
++                "id": "wangera",
++                "label": "Kenya Wangera",
++                "type": "pro",
++                "favorite": True,
++                "selected": True,
++                "utility": False,
++                "temperature": 94.5,
++                "phases": [{}, {}],
++            },
++            {
++                "id": "mubuga",
++                "label": "Burundi Mubuga",
++                "type": "pro",
++                "favorite": True,
++                "selected": False,
++                "utility": False,
++                "temperature": 94.0,
++                "phases": [{}],
++            },
++            {
++                "id": "backflush",
++                "label": "Backflush",
++                "type": "standard",
++                "favorite": True,
++                "selected": False,
++                "utility": True,
++                "phases": [{}],
++            },
++        ]
++
++    async def profiles_list(self):
++        return [dict(item) for item in self.items]
++
++    async def profile_load(self, profile_id):
++        return next(dict(item) for item in self.items if item["id"] == profile_id)
++
++    async def profile_select(self, profile_id):
++        for item in self.items:
++            item["selected"] = item["id"] == profile_id
++
++
++def run(coro):
++    return asyncio.run(coro)
++
++
++def test_default_list_hides_utility():
++    profiles = run(ProfileService(FakeClient()).list())
++    assert [p.id for p in profiles] == ["wangera", "mubuga"]
++
++
++def test_select_refreshes_selected_flag():
++    selected = run(ProfileService(FakeClient()).select("mubuga"))
++    assert selected.id == "mubuga"
++    assert selected.selected
++
++
++def test_utility_selection_is_blocked():
++    with pytest.raises(ProfileSelectionBlocked):
++        run(ProfileService(FakeClient()).select("backflush"))
++
++
++def test_callbacks_are_compact_and_roundtrip():
++    encoded = encode_callback("s", "wangera")
++    assert encoded == "pf|s|wangera"
++    assert decode_callback(encoded) == ("s", "wangera")
++
++
++def test_callback_size_limit():
++    with pytest.raises(ValueError):
++        encode_callback("s", "x" * 70)
++
++
++def test_pagination():
++    profiles = run(ProfileService(FakeClient()).list())
++    page = paginate_profiles(profiles, page=0, page_size=1)
++    assert page.total == 2
++    assert page.pages == 2
++    assert page.has_next

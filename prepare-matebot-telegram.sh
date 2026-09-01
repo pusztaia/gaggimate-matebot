@@ -5,10 +5,11 @@ set -eu
 #
 # Default files:
 #   /mnt/ssd/secrets/telegram_token
-#   /mnt/ssd/secrets/telegram_chat_ids.json
+#   /mnt/ssd/secrets/telegram_chat_id
 #
-# The chat ID file is stored as a JSON array because the Portainer
-# example stack extracts the first entry and exports it as TELEGRAM_CHAT_ID.
+# The chat ID file holds a single plain numeric Telegram chat ID
+# (optionally negative), which the Portainer stack reads directly
+# and exports as TELEGRAM_CHAT_ID.
 #
 # Permissions:
 #   secrets directory: root:<PGID> 750
@@ -20,7 +21,7 @@ SECRETS_DIR="${1:-/mnt/ssd/secrets}"
 PGID="${PGID:-1000}"
 
 TOKEN_FILE="$SECRETS_DIR/telegram_token"
-CHAT_IDS_FILE="$SECRETS_DIR/telegram_chat_ids.json"
+CHAT_ID_FILE="$SECRETS_DIR/telegram_chat_id"
 
 echo "Preparing Telegram secret directory..."
 sudo install -d -m 750 -o root -g "$PGID" "$SECRETS_DIR"
@@ -79,10 +80,10 @@ trap 'rm -f "$TMP_TOKEN" "$TMP_CHAT"' EXIT HUP INT TERM
 
 umask 077
 printf '%s\n' "$TELEGRAM_TOKEN" > "$TMP_TOKEN"
-printf '["%s"]\n' "$TELEGRAM_CHAT_ID" > "$TMP_CHAT"
+printf '%s\n' "$TELEGRAM_CHAT_ID" > "$TMP_CHAT"
 
 sudo install -m 640 -o root -g "$PGID" "$TMP_TOKEN" "$TOKEN_FILE"
-sudo install -m 640 -o root -g "$PGID" "$TMP_CHAT" "$CHAT_IDS_FILE"
+sudo install -m 640 -o root -g "$PGID" "$TMP_CHAT" "$CHAT_ID_FILE"
 
 rm -f "$TMP_TOKEN" "$TMP_CHAT"
 trap - EXIT HUP INT TERM
@@ -92,11 +93,11 @@ unset TELEGRAM_TOKEN
 echo
 echo "Telegram secret files are ready:"
 ls -ld "$SECRETS_DIR"
-ls -l "$TOKEN_FILE" "$CHAT_IDS_FILE"
+ls -l "$TOKEN_FILE" "$CHAT_ID_FILE"
 
 echo
 echo "Chat ID file content:"
-cat "$CHAT_IDS_FILE"
+cat "$CHAT_ID_FILE"
 
 echo
 echo "The bot token itself was not printed."

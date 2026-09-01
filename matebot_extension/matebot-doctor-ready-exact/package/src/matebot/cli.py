@@ -1,0 +1,399 @@
+"""matebot CLI: run / decode / sitegen / sync."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import pathlib
+import sys
+
+from . import __version__
+from .config import Config
+from .slog import SlogError, parse_slog
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="matebot",
+        description="The proactive companion for GaggiMate espresso machines.",
+    )
+    parser.add_argument("--version", action="version", version=f"matebot {__version__}")
+    parser.add_argument("--config", help="path to config.toml")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_run = sub.add_parser("run", help="watch the machine, message after every shot")
+    p_run.add_argument("--replay", help="JSONL frame capture instead of the live machine")
+    p_run.add_argument("--dry-run", action="store_true", help="log instead of messaging")
+
+    p_dec = sub.add_parser("decode", help="decode a .slog file to JSON or CSV")
+    p_dec.add_argument("file", type=pathlib.Path)
+    p_dec.add_argument("--csv", action="store_true")
+
+    p_site = sub.add_parser("sitegen", help="generate the static shot-explorer site")
+    p_site.add_argument("shots_dir", type=pathlib.Path)
+    p_site.add_argument("-o", "--out", type=pathlib.Path, required=True)
+    p_site.add_argument("--title", default="Shot Journal")
+
+    sub.add_parser("sync", help="one-off sync of the data repo (shots, profiles, site)")
+
+    args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    config = Config.load(args.config)
+
+    if args.cmd == "decode":
+        try:
+            shot = parse_slog(args.file.read_bytes())
+        except SlogError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(shot.to_csv() if args.csv else shot.to_json(indent=1))
+        return 0
+
+    if args.cmd == "sitegen":
+        from .sitegen import generate
+
+        count = generate(args.shots_dir, args.out, title=args.title)
+        print(f"{count} shots -> {args.out}")
+        return 0
+
+    if args.cmd == "sync":
+        return asyncio.run(_sync(config))
+
+    return asyncio.run(_run(config, replay=args.replay, dry_run=args.dry_run))
+
+
+async def _sync(config: Config) -> int:
+    from .machine import GaggiMateClient
+    from .sync import sync
+
+    if not config.data_repo:
+        print("error: MATEBOT_DATA_REPO / data_repo not configured", file=sys.stderr)
+        return 1
+    async with GaggiMateClient(config.machine_host) as client:
+        # WS connection (for profiles) is optional here; HTTP does the rest.
+        pushed = await sync(
+            client, config.data_repo,
+            site_title=config.site_title, video_keep=config.video_keep,
+        )
+    print("synced" if pushed else "nothing new")
+    return 0
+
+
+async def _run(config: Config, *, replay: str | None, dry_run: bool) -> int:
+    from .commands import CommandRouter, make_frame_cache
+    from .conversation import Conversation
+    from .machine import GaggiMateClient
+    from .messengers.base import OptionSelected, TextReply
+    from .state import State
+    from .sync import sync_soon
+    from .watcher import ShotWatcher, replay_frames
+
+    log = logging.getLogger("matebot")
+    state = State(pathlib.Path(config.state_dir) / "state.json")
+    if not state.persistent:
+        log.error(
+            "state dir %s is not writable - bags/defaults/resume won't survive "
+            "restarts (Docker: chown -R 1000:1000 the mounted data dir)",
+            config.state_dir,
+        )
+
+    async with GaggiMateClient(config.machine_host) as client:
+        if dry_run:
+
+            class _DryMessenger:
+                async def start(self): ...
+                async def stop(self): ...
+                async def send(self, text, options=None):
+                    log.info("DRY SEND: %s %s", text, [o.label for o in options or []])
+                    return "0"
+                async def edit(self, ref, text, options=None): ...
+                def events(self):
+                    return _never()
+
+            messenger = _DryMessenger()
+        else:
+            from .messengers import create_messenger
+
+            messenger = create_messenger(config)
+
+        def schedule_sync(*, quiet: bool = False):
+            if config.sync_enabled and config.data_repo:
+                asyncio.create_task(
+                    sync_soon(
+                        client, config.data_repo, messenger.send,
+                        site_title=config.site_title, video_keep=config.video_keep,
+                        state=state, quiet=quiet,
+                    )
+                )
+
+        async def save_notes(shot_id: int, notes: dict) -> bool:
+            from .bags import track_shot
+            from .hints import make_hint
+
+            for attempt in range(3):
+                try:
+                    resp = await client.notes_save(shot_id, notes)
+                    log.info("notes saved for %06d: %s", shot_id, resp.get("msg", "?"))
+                    schedule_sync()  # push notes + regenerated journal
+                    if config.hints_enabled:
+                        hint = make_hint(notes)
+                        if hint:
+                            await messenger.send(hint)
+                    bag_msg = track_shot(state, notes)  # no-op unless a bag is registered
+                    if bag_msg:
+                        await messenger.send(bag_msg)
+                    return True
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("notes save attempt %d failed: %s", attempt + 1, exc)
+                    await asyncio.sleep(5 * (attempt + 1))
+            return False
+
+        convo = Conversation(messenger, state, save_notes)
+        cache_frame, latest_frame = make_frame_cache()
+        router = CommandRouter(client, state, convo, messenger, config, latest_frame)
+
+        camera = None
+        pending_clip: dict = {"path": None, "ts": 0.0}
+        attach_lock = asyncio.Lock()
+
+        async def try_attach_clip(shot_id: int | None = None) -> None:
+            """Rendezvous: a finished clip and a resolved shot id arrive in
+            either order; whichever side is second completes the attach."""
+            import time as _time
+
+            from .video import VideoError, attach_video, get_offset
+
+            async with attach_lock:
+                clip = pending_clip["path"]
+                if clip is None or _time.monotonic() - pending_clip["ts"] > 300:
+                    return
+                sid = shot_id if shot_id is not None else state.get("last_shot_id")
+                if not sid or get_offset(config.data_repo, sid) is not None:
+                    return  # no shot yet, or it already has a video
+                pending_clip["path"] = None
+                try:
+                    await attach_video(config.data_repo, sid, clip,
+                                       offset=config.camera_offset)
+                    log.info("camera clip attached to shot %06d", sid)
+                    asyncio.create_task(post_video(sid))
+                except VideoError as exc:
+                    log.warning("clip attach failed: %s", exc)
+                    await messenger.send(f"🎬 Couldn't process the shot video: {exc}")
+                finally:
+                    pathlib.Path(clip).unlink(missing_ok=True)
+
+        async def post_video(sid: int) -> None:
+            """After a clip attaches: auto-calibrate its sync offset from the
+            pump's audio onset, then render + send the shot reel."""
+            try:
+                from .calibrate import calibrate_offset
+                from .video import set_offset
+
+                offset = await calibrate_offset(config.data_repo, sid)
+                if offset is not None:
+                    set_offset(config.data_repo, sid, offset)
+                    log.info("shot %06d video offset auto-calibrated to %+.2fs", sid, offset)
+            except Exception as exc:  # noqa: BLE001 - calibration is best-effort
+                log.warning("offset calibration failed: %s", exc)
+            schedule_sync(quiet=True)
+            if not config.reel_enabled:
+                return
+            try:
+                from .render import RenderError, render_reel
+
+                reel = await render_reel(config.data_repo, sid, title=f"Shot #{sid}")
+                try:
+                    await messenger.send_video(reel.read_bytes(), f"🎬 Shot #{sid}")
+                finally:
+                    reel.unlink(missing_ok=True)
+            except RenderError as exc:
+                log.info("no reel for shot %06d: %s", sid, exc)
+            except Exception as exc:  # noqa: BLE001 - never let the reel kill the bot
+                log.warning("reel for shot %06d failed: %s", sid, exc)
+
+        if config.camera_enabled and config.data_repo:
+            import shutil as _shutil
+            import time as _time
+
+            from .camera import CameraServer
+
+            async def on_clip(webm_path):
+                keep = pathlib.Path(config.state_dir) / "pending_clip.webm"
+                _shutil.copy(webm_path, keep)
+                pending_clip["path"] = str(keep)
+                pending_clip["ts"] = _time.monotonic()
+                await try_attach_clip()
+
+            camera = CameraServer(config.camera_port, on_clip)
+            await camera.start()
+        # messenger APIs can be flaky at boot; retry instead of crash-looping
+        for attempt in range(8):
+            try:
+                await messenger.start()
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 7:
+                    raise
+                log.warning("messenger start failed (%s); retry in %ds", exc, 10 * (attempt + 1))
+                await asyncio.sleep(10 * (attempt + 1))
+        try:
+            await convo.resume_if_pending()
+
+            async def pump_events():
+                async for event in messenger.events():
+                    try:
+                        if isinstance(event, TextReply) and event.text.strip().startswith("/"):
+                            if await router.handle(event.text):
+                                continue
+                        if isinstance(event, OptionSelected):
+                            if await router.handle_option(event.option_id):
+                                continue
+                        await convo.handle_event(event)
+                    except Exception:  # noqa: BLE001 - a flaky send must not kill the bot
+                        log.exception("event handling failed")
+
+            async def pump_shots():
+                import re as _re
+                import time as _time
+
+                last_frame_at = 0.0
+
+                shot_active = False
+
+                async def tee(source):
+                    nonlocal last_frame_at, shot_active
+                    async for frame in source:
+                        now = _time.monotonic()
+                        gap = now - last_frame_at if last_frame_at else None
+                        last_frame_at = now
+                        if camera is not None and frame.get("tp") == "evt:status":
+                            active = (
+                                frame.get("m") == 1
+                                and (frame.get("process") or {}).get("a") == 1
+                                and not _re.search(config.ignore_profiles, frame.get("p") or "")
+                            )
+                            if active and not shot_active:
+                                await camera.shot_started()
+                            elif shot_active and not active:
+                                asyncio.create_task(camera.shot_ended())
+                            shot_active = active
+                        if gap is None or gap > 60:
+                            await router.on_machine_online(frame)
+                            if state.get("sync_pending"):
+                                log.info("machine is back; retrying pending journal sync")
+                                state.set("sync_pending", False)  # avoid re-trigger storms
+                                schedule_sync(quiet=True)
+                        cache_frame(frame)
+                        await router.on_frame(frame)
+                        yield frame
+
+                async def on_utility(profile):
+                    # only actual cleaning runs reset the counter, not water flushes
+                    if _re.search(r"(?i)backflush|descale|clean", profile or ""):
+                        state.set("shots_since_clean", 0)
+                        log.info("cleaning run detected (%s); counter reset", profile)
+
+                frames = tee(
+                    replay_frames(replay) if replay else client.status_stream()
+                )
+                watcher = ShotWatcher(
+                    client,
+                    min_duration_s=config.min_shot_s,
+                    ignore_profiles=config.ignore_profiles,
+                    last_known_id=state.get("last_shot_id", -1),
+                    on_utility=on_utility,
+                )
+                async for shot in watcher.shots(frames):
+                    since_clean = state.get("shots_since_clean", 0) + 1
+                    state.set("shots_since_clean", since_clean)
+                    if config.clean_every and since_clean % config.clean_every == 0:
+                        try:
+                            await messenger.send(
+                                f"🧽 {since_clean} espresso shots since the last backflush — "
+                                "the group head would appreciate a round with the blind basket."
+                            )
+                        except Exception:  # noqa: BLE001
+                            log.exception("cleaning reminder failed")
+                    state.update(
+                        last_shot_id=shot.entry.id,
+                        last_shot={
+                            "shot_id": shot.entry.id,
+                            "profile": shot.profile_label or shot.entry.profile_name,
+                            "duration_ms": shot.duration_ms,
+                            "volume_g": shot.entry.volume_g,
+                        },
+                    )
+                    photo = None
+                    if config.plots_enabled:
+                        try:
+                            from .plot import render_shot_png
+                            from .slog import parse_slog
+
+                            parsed = parse_slog(await client.fetch_slog(shot.entry.id))
+                            photo = render_shot_png(
+                                parsed, title=f"Shot #{shot.entry.id} — {parsed.profile_name}"
+                            )
+                        except Exception as exc:  # noqa: BLE001 - photo is a nice-to-have
+                            log.info("shot plot skipped: %s", exc)
+                    try:
+                        await convo.start_shot(
+                            shot.entry.id,
+                            shot.profile_label or shot.entry.profile_name,
+                            shot.duration_ms,
+                            shot.entry.volume_g,
+                            photo=photo,
+                        )
+                    except Exception:  # noqa: BLE001 - keep watching even if messaging fails
+                        log.exception("questionnaire start failed (state kept for resume)")
+                    await try_attach_clip(shot.entry.id)
+                    schedule_sync()  # archive the .slog right away
+
+            async def weekly_digest():
+                from datetime import datetime
+
+                from .commands import build_digest
+                from .digest import seconds_until_sunday_evening
+
+                while True:
+                    await asyncio.sleep(seconds_until_sunday_evening(datetime.now()))
+                    stamp = datetime.now().strftime("%G-W%V")
+                    if state.get("last_digest") == stamp:
+                        continue
+                    try:
+                        text = await build_digest(client, config)
+                        if text:
+                            await messenger.send(text)
+                        state.set("last_digest", stamp)
+                    except Exception:  # noqa: BLE001
+                        log.exception("weekly digest failed")
+
+            tasks = [asyncio.create_task(pump_events()), asyncio.create_task(pump_shots())]
+            if config.digest_enabled:
+                tasks.append(asyncio.create_task(weekly_digest()))
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            for task in done:
+                exc = task.exception()
+                if exc:
+                    raise exc
+        finally:
+            if camera is not None:
+                await camera.stop()
+            await messenger.stop()
+    return 0
+
+
+async def _never():
+    if False:  # pragma: no cover - typed empty async generator
+        yield
+    await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

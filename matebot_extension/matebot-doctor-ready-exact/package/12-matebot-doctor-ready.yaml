@@ -1,0 +1,83 @@
+services:
+  matebot:
+    # Local custom image with Telegram GaggiMate profile control.
+    # Build this image on the same Docker host before deploying the stack.
+    image: matebot-profile-control:0.4.0-doctor-ready1
+
+    # Do not pull this local custom image from a registry.
+    pull_policy: never
+
+    container_name: matebot
+    restart: unless-stopped
+
+    entrypoint:
+      - /bin/sh
+      - -ec
+
+    command:
+      - |
+        export TELEGRAM_BOT_TOKEN="$$(cat /run/secrets/telegram_token)"
+        export TELEGRAM_CHAT_ID="$$(cat /run/secrets/telegram_chat_id)"
+
+        test -n "$$TELEGRAM_BOT_TOKEN"
+
+        case "$$TELEGRAM_CHAT_ID" in
+          ''|*[!0-9-]*)
+            echo "ERROR: TELEGRAM_CHAT_ID must contain one numeric Telegram chat ID" >&2
+            exit 1
+            ;;
+        esac
+
+        exec matebot run
+
+    environment:
+      TZ: ${TZ:-Europe/Budapest}
+
+      # GaggiMate
+      MATEBOT_MACHINE_HOST: ${MATEBOT_MACHINE_HOST:-192.168.50.68}
+      MATEBOT_MESSENGER: telegram
+
+      # Simple mode:
+      # persist only MATEbot state.
+      # Intentionally NO MATEBOT_DATA_REPO,
+      # therefore archive/journal sync is disabled.
+      MATEBOT_STATE_DIR: /data/state
+
+      # MATEbot behavior
+      MATEBOT_HINTS: ${MATEBOT_HINTS:-1}
+      MATEBOT_MIN_SHOT_S: ${MATEBOT_MIN_SHOT_S:-10}
+
+      # Ignore cleaning / maintenance profiles as normal espresso shots.
+      MATEBOT_IGNORE_PROFILES: ${MATEBOT_IGNORE_PROFILES:-(?i)backflush|descale|flush|clean}
+
+    volumes:
+      # Persistent MATEbot state
+      - ${MATEBOT_DATA_PATH:-/mnt/ssd-500/smb/matebot}/state:/data/state
+
+      # Host timezone
+      - /etc/localtime:/etc/localtime:ro
+
+      # Dedicated MATEbot Telegram secrets
+      - ${MATEBOT_TELEGRAM_TOKEN_PATH:-/mnt/ssd-500/smb/matebot/secrets/telegram_token}:/run/secrets/telegram_token:ro
+      - ${MATEBOT_TELEGRAM_CHAT_ID_PATH:-/mnt/ssd-500/smb/matebot/secrets/telegram_chat_id}:/run/secrets/telegram_chat_id:ro
+
+    # Local custom image: disable Diun registry update checks.
+    labels:
+      diun.enable: "false"
+
+    security_opt:
+      - no-new-privileges:true
+
+    # Resource limits
+    mem_limit: ${MATEBOT_MEM_LIMIT:-256m}
+    mem_reservation: 64m
+    cpus: ${MATEBOT_CPU_LIMIT:-0.50}
+    pids_limit: 256
+
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
